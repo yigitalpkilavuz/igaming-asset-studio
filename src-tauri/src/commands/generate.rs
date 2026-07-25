@@ -1534,8 +1534,27 @@ identity, composition, pose, art style, palette, lighting and every detail NOT m
 above EXACTLY as in the original — this is a small targeted revision, not a redraw. {bg_clause}"
     );
 
+    // Target the ASSET's authored aspect, not the source take's: the size parameter
+    // always beats prompt text, so "make it 16:9" typed into the instruction can never
+    // work — instead a refine of a wrong-aspect take silently corrects the canvas.
     let dims = image::load_from_memory(&send_bytes).map_err(|e| format!("decode: {e}"))?;
-    let size = crate::providers::openai_image::edit_size(dims.width(), dims.height());
+    let project = storage::read_project(&base, &game_id)?;
+    let descriptor = find_descriptor(&project.config, &asset_key)?;
+    let (tw, th) = match (descriptor.author_w, descriptor.author_h) {
+        (Some(w), Some(h)) => (w, h),
+        _ => (dims.width(), dims.height()),
+    };
+    let mut prompt = prompt;
+    let src_aspect = dims.width() as f64 / dims.height().max(1) as f64;
+    let dst_aspect = tw as f64 / th.max(1) as f64;
+    if (src_aspect / dst_aspect - 1.0).abs() > 0.02 {
+        prompt.push_str(
+            " The output canvas has a DIFFERENT aspect ratio than the input: naturally \
+extend the scene to fill the new canvas edge to edge — continue the existing artwork \
+outward, no borders, no letterboxing, no empty bands.",
+        );
+    }
+    let size = crate::providers::openai_image::edit_size(tw, th);
     let out = crate::providers::openai_image::edit_image(&key, &send_bytes, &prompt, &size, None)
         .await?;
 
