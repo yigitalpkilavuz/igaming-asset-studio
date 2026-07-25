@@ -128,9 +128,18 @@ fn expanding_wild_derives_cell_symbol_plus_full_column_twin() {
 fn babewyn_derivation() {
     let assets = derive_assets(&babewyn_config());
 
-    // 12 symbols + 4 backgrounds + 3 reel_chrome + 2 symbol_chrome + 6 panels
-    // + 0 payline (scatter) + 3 branding/splash = 30.
-    assert_eq!(assets.len(), 30, "unexpected asset count");
+    // 12 symbols + 3 label banners (wild, scatter, INK_DROP special) + 4 backgrounds
+    // + 3 reel_chrome + 2 symbol_chrome + 6 panels + 0 payline (scatter)
+    // + 3 branding/splash = 33.
+    assert_eq!(assets.len(), 33, "unexpected asset count");
+    // Localization: labeled specials derive an EMPTY banner asset; the word itself
+    // never bakes into artwork.
+    let banner = find(&assets, "symbol_wild_banner").expect("symbol_wild_banner");
+    assert_eq!(banner.kind, AssetKind::SymbolChrome);
+    assert!(banner.description.contains("WITHOUT any text"), "{}", banner.description);
+    assert!(has(&assets, "symbol_scatter_banner"));
+    assert!(has(&assets, "symbol_ink_drop_banner"));
+    assert!(!has(&assets, "symbol_h1_banner"), "pay symbols carry no banner");
 
     // Symbols present and sized from the 6×5 cell (110 GU -> 220 author px).
     let h1 = find(&assets, "symbol_h1").expect("symbol_h1");
@@ -161,9 +170,9 @@ fn babewyn_derivation() {
 fn lines_derivation() {
     let assets = derive_assets(&lines_config());
 
-    // 12 symbols + 4 backgrounds + 3 reel_chrome + 2 symbol_chrome + 5 panels
-    // + 2 payline (lines) + 3 branding/splash = 31.
-    assert_eq!(assets.len(), 31, "unexpected asset count");
+    // 12 symbols + 2 label banners (wild, scatter) + 4 backgrounds + 3 reel_chrome
+    // + 2 symbol_chrome + 5 panels + 2 payline (lines) + 3 branding/splash = 33.
+    assert_eq!(assets.len(), 33, "unexpected asset count");
 
     // 5×3 cell is 140 GU -> 280 author px symbols; wild/scatter ship square too.
     let h1 = find(&assets, "symbol_h1").expect("symbol_h1");

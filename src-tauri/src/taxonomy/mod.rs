@@ -91,6 +91,29 @@ pub fn derive_assets(config: &GameConfig) -> Vec<AssetDescriptor> {
             true,
             desc.clone(),
         ));
+        // Localization: labeled specials (wild/scatter/bonus/short specials) derive a
+        // separate EMPTY banner asset — the plate the game typesets the translated
+        // feature word onto at runtime. The word never bakes into any artwork.
+        if let Some(label) = crate::prompts::templates::symbol_label(sym.role, &sym.name) {
+            out.push(Rule::make(
+                format!("symbol_{}_banner", sym.key),
+                AssetKind::SymbolChrome,
+                "symbol_chrome",
+                "§2",
+                Production::Raster,
+                Some((dims.0, (dims.0 * 2) / 5)),
+                raster_formats(),
+                None,
+                true,
+                format!(
+                    "The empty banner the \"{label}\" word sits on for the {} symbol: a clean \
+ribbon, plaque or plate with a completely BLANK face sized for one short word, matching \
+the symbol's material family, drawn WITHOUT any text, letters, engraving or emblem — \
+the game typesets the localized word onto it at runtime.",
+                    if sym.name.trim().is_empty() { &sym.key } else { &sym.name }
+                ),
+            ));
+        }
         // An expanding wild is TWO assets: the normal cell symbol above, plus the
         // full-column art it expands into (cell width × rows tall; the fit pass and
         // the per-cell composition clause don't apply to the twin).

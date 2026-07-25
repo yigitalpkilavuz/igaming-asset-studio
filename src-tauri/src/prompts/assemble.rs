@@ -20,7 +20,6 @@ pub struct Assembled {
 
 /// Assemble the final (positive, negative) prompt for an asset.
 pub fn assemble(config: &GameConfig, descriptor: &AssetDescriptor, prompt: &PromptState) -> Assembled {
-    let mut labeled = false;
     let positive = if !prompt.override_prompt.trim().is_empty() {
         prompt.override_prompt.trim().to_string()
     } else {
@@ -78,18 +77,13 @@ pub fn assemble(config: &GameConfig, descriptor: &AssetDescriptor, prompt: &Prom
             composed = composed.replace("{fill}", fill);
         }
 
-        // Special symbols (wild/scatter/bonus/special) get a role-specific addendum: premium
-        // framing, and a lettered banner (WILD/SCATTER/BONUS/…) for the labelled ones.
+        // Special symbols (wild/scatter/bonus/special) get a role-specific addendum:
+        // premium framing. Feature words are NEVER lettered into the art (localization —
+        // the game typesets them onto the separate `_banner` asset at runtime).
         if descriptor.kind == AssetKind::Symbol {
             if let Some((role, name)) = symbol_role_and_name(config, descriptor) {
-                if let Some((clause, has_label)) = special_symbol_clause(role, &name) {
-                    if has_label {
-                        // The base symbols composition forbids captions — drop that so the
-                        // intentional feature banner isn't suppressed.
-                        composed = composed.replace(", no watermark or caption", "");
-                    }
+                if let Some(clause) = special_symbol_clause(role, &name) {
                     composed.push_str(&clause);
-                    labeled = has_label;
                 }
             }
         }
@@ -134,10 +128,6 @@ pub fn assemble(config: &GameConfig, descriptor: &AssetDescriptor, prompt: &Prom
     } else {
         category_negative(&descriptor.category)
     };
-    if labeled {
-        // Labelled special symbols want their feature word to render — don't suppress it.
-        floor = floor.replace(", caption", "");
-    }
     if prompt.layered && is_plate {
         // Blur and cross-plane atmosphere are what ruin a parallax cut.
         floor.push_str(", depth of field, bokeh, soft focus, motion blur, atmospheric haze blending distant and near elements together");
@@ -387,7 +377,9 @@ mod tests {
     }
 
     #[test]
-    fn wild_symbol_gets_a_labelled_banner_and_relaxed_negative() {
+    fn wild_symbol_gets_no_lettering_and_keeps_text_suppressors() {
+        // Localization: the feature word must NOT bake into the art — the game
+        // typesets the translated word onto the separate `_banner` asset at runtime.
         let mut cfg = config();
         cfg.symbols.push(SymbolDef {
             key: "wild".into(),
@@ -398,13 +390,14 @@ mod tests {
         });
         let a = assemble(&cfg, &descriptor_for("symbol_wild"), &PromptState::default());
         assert!(a.positive.contains("special feature symbol"));
-        assert!(a.positive.contains("\"WILD\""), "letters the WILD banner");
-        assert!(!a.positive.contains("no watermark or caption"), "caption rule dropped");
-        assert!(!a.negative.contains("caption"), "caption suppressor dropped from negative");
+        assert!(!a.positive.contains("\"WILD\""), "must not letter the word into the art");
+        assert!(a.positive.contains("Do NOT letter"), "explicit no-lettering order present");
+        assert!(a.positive.contains("no watermark or caption"), "caption rule KEPT");
+        assert!(a.negative.contains("caption"), "caption suppressor KEPT in negative");
     }
 
     #[test]
-    fn scatter_letters_scatter_and_high_is_unchanged() {
+    fn scatter_gets_no_lettering_and_high_is_unchanged() {
         let mut cfg = config();
         cfg.symbols.push(SymbolDef {
             key: "scat".into(),
@@ -414,7 +407,8 @@ mod tests {
             size_nudge: 1.0,
         });
         let scatter = assemble(&cfg, &descriptor_for("symbol_scat"), &PromptState::default());
-        assert!(scatter.positive.contains("\"SCATTER\""));
+        assert!(!scatter.positive.contains("\"SCATTER\""), "word stays out of the art");
+        assert!(scatter.positive.contains("special feature symbol"));
         // A High symbol gets no special clause and keeps the caption rule + negative.
         let high = assemble(&cfg, &descriptor_for("symbol_h1"), &PromptState::default());
         assert!(!high.positive.contains("special feature symbol"));

@@ -323,15 +323,18 @@ read with only a slim even margin of empty space around it",
 /// a restrained glow, and — for wild/scatter/bonus — a banner lettering the feature word
 /// (WILD / SCATTER / BONUS) baked into the artwork. Returns `(clause, has_label)`; when
 /// `has_label` is true the caller relaxes the "no caption" rules so the label survives.
-pub fn special_symbol_clause(role: SymbolRole, name: &str) -> Option<(String, bool)> {
-    // The feature word to letter on the banner, if any.
-    let label: Option<String> = match role {
+/// The feature word a special symbol carries (WILD / SCATTER / BONUS / a short
+/// special name). The word is NEVER lettered into the symbol art — localization:
+/// the game typesets the translated word at runtime — so this instead drives which
+/// symbols derive a separate empty `symbol_<key>_banner` asset to carry it.
+pub fn symbol_label(role: SymbolRole, name: &str) -> Option<String> {
+    match role {
         SymbolRole::Wild | SymbolRole::ExpandingWild => Some("WILD".into()),
         SymbolRole::Scatter => Some("SCATTER".into()),
         SymbolRole::Bonus => Some("BONUS".into()),
         SymbolRole::Special => {
-            // A short, single-word-ish special (e.g. "Mystery") reads well as a label; a
-            // long themed name does not, so it stays label-free.
+            // A short, single-word-ish special (e.g. "Mystery") carries a label; a
+            // long themed name does not.
             let words = name.split_whitespace().count();
             let trimmed = name.trim();
             if !trimmed.is_empty() && words <= 2 && trimmed.chars().count() <= 12 {
@@ -340,8 +343,15 @@ pub fn special_symbol_clause(role: SymbolRole, name: &str) -> Option<(String, bo
                 None
             }
         }
-        SymbolRole::High | SymbolRole::Low => return None,
-    };
+        SymbolRole::High | SymbolRole::Low => None,
+    }
+}
+
+pub fn special_symbol_clause(role: SymbolRole, name: &str) -> Option<String> {
+    if matches!(role, SymbolRole::High | SymbolRole::Low) {
+        return None;
+    }
+    let label = symbol_label(role, name);
 
     let role_hint = match role {
         SymbolRole::Wild | SymbolRole::ExpandingWild => "it substitutes for other symbols, so \
@@ -359,14 +369,16 @@ common symbols",
 common symbol, framed in a distinct emblem border with a restrained glow so it stands \
 out on the reels";
 
+    // Localization rule: the feature word is NEVER painted into the art. The game
+    // typesets the translated word at runtime onto the symbol's separate banner asset.
     let clause = match &label {
-        Some(l) => format!(
-            " — this is the special feature symbol; {role_hint}. {premium}; and lay a clean banner \
-or ribbon across it clearly lettering the single word \"{l}\" in bold, legible, correctly-spelled \
-uppercase — crisp, centered and integrated into the artwork as an intentional design element (a \
-real banner, not a watermark)"
+        Some(_) => format!(
+            " — this is the special feature symbol; {role_hint}. {premium}. Do NOT letter \
+any word onto the artwork: absolutely no text, letters, numbers, lettered banner or \
+inscribed ribbon — the localized feature word is applied by the game at runtime on a \
+separate banner asset"
         ),
         None => format!(" — this is the special feature symbol; {role_hint}. {premium}"),
     };
-    Some((clause, label.is_some()))
+    Some(clause)
 }
