@@ -1,5 +1,6 @@
 [package]
 name = "asset-pipeline"
+default-run = "asset-pipeline"
 version = "0.1.0"
 description = "Wishfell Asset Pipeline — slot-game art asset manager"
 authors = ["Wishfell"]
