@@ -47,6 +47,16 @@ pub async fn asset_quality(
 ) -> Result<QualityReport, String> {
     let _ = config_dir(&app)?; // (settings not needed yet; keeps the signature future-proof)
     let base = projects_root(&app)?;
+    asset_quality_core(base, game_id, asset_key, variation_id).await
+}
+
+/// App-free core of `asset_quality` — shared with the headless CLI.
+pub async fn asset_quality_core(
+    base: std::path::PathBuf,
+    game_id: String,
+    asset_key: String,
+    variation_id: String,
+) -> Result<QualityReport, String> {
     let project = storage::read_project(&base, &game_id)?;
     let descriptor = find_descriptor(&project.config, &asset_key)?;
     let record = storage::read_asset_record(&base, &game_id, &asset_key)?

@@ -1,17 +1,17 @@
-mod assistant;
-mod commands;
-mod export;
-mod glyphs;
-mod layers;
-mod model;
-mod processing;
-mod prompts;
-mod providers;
-mod secrets;
-mod settings;
-mod storage;
-mod studio;
-mod taxonomy;
+pub mod assistant;
+pub mod commands;
+pub mod export;
+pub mod glyphs;
+pub mod layers;
+pub mod model;
+pub mod processing;
+pub mod prompts;
+pub mod providers;
+pub mod secrets;
+pub mod settings;
+pub mod storage;
+pub mod studio;
+pub mod taxonomy;
 
 use tauri_specta::{collect_commands, Builder};
 

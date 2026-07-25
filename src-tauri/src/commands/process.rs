@@ -25,6 +25,16 @@ pub async fn process_variation(
     variation_id: String,
 ) -> Result<AssetRecord, String> {
     let base = projects_root(&app)?;
+    process_variation_core(base, game_id, asset_key, variation_id).await
+}
+
+/// App-free core of `process_variation` — shared with the headless CLI.
+pub async fn process_variation_core(
+    base: std::path::PathBuf,
+    game_id: String,
+    asset_key: String,
+    variation_id: String,
+) -> Result<AssetRecord, String> {
     let project = storage::read_project(&base, &game_id)?;
     let descriptor = find_descriptor(&project.config, &asset_key)?;
 

@@ -23,7 +23,7 @@ use crate::model::game_config::GameConfig;
 use crate::taxonomy;
 
 /// Find a derived asset descriptor by key for a config.
-pub(crate) fn find_descriptor(
+pub fn find_descriptor(
     config: &GameConfig,
     asset_key: &str,
 ) -> Result<AssetDescriptor, String> {
@@ -34,7 +34,7 @@ pub(crate) fn find_descriptor(
 }
 
 /// Milliseconds since the Unix epoch, as `f64` (specta-friendly, exact past year 2100).
-pub(crate) fn now_ms() -> f64 {
+pub fn now_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as f64)
@@ -43,7 +43,26 @@ pub(crate) fn now_ms() -> f64 {
 
 /// Fixed app-data dir — holds `settings.json`. Never moves (we must read the
 /// projects-root setting from here).
-pub(crate) fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+/// Headless (CLI) twin of `config_dir` — the same location Tauri resolves for the
+/// bundle id, without an AppHandle. Keep in lockstep with `tauri.conf.json`.
+pub fn headless_config_dir() -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "no HOME env var".to_string())?;
+    Ok(PathBuf::from(home).join("Library/Application Support/com.wishfell.assetpipeline"))
+}
+
+/// Headless twin of `projects_root`.
+pub fn headless_projects_root() -> Result<PathBuf, String> {
+    let config = headless_config_dir()?;
+    let settings = crate::settings::load(&config);
+    let root = settings.projects_root.trim();
+    Ok(if root.is_empty() {
+        config.join("projects")
+    } else {
+        PathBuf::from(root)
+    })
+}
+
+pub fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map_err(|e| format!("could not resolve app data dir: {e}"))
@@ -51,7 +70,7 @@ pub(crate) fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 /// The folder that holds project folders. Configurable via settings; defaults to
 /// `<config_dir>/projects`.
-pub(crate) fn projects_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub fn projects_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let config = config_dir(app)?;
     let settings = crate::settings::load(&config);
     let root = settings.projects_root.trim();

@@ -50,7 +50,22 @@ pub async fn generate_variation(
 ) -> Result<AssetRecord, String> {
     let cfg = settings::load(&config_dir(&app)?);
     let base = projects_root(&app)?;
+    generate_variation_core(cfg, base, game_id, asset_key, provider_id, reference_keys, guide_key, count)
+        .await
+}
 
+/// App-free core of `generate_variation` — shared with the headless CLI.
+#[allow(clippy::too_many_arguments)]
+pub async fn generate_variation_core(
+    cfg: crate::settings::AppSettings,
+    base: std::path::PathBuf,
+    game_id: String,
+    asset_key: String,
+    provider_id: String,
+    reference_keys: Vec<String>,
+    guide_key: String,
+    count: u32,
+) -> Result<AssetRecord, String> {
     let project = storage::read_project(&base, &game_id)?;
     let descriptor = find_descriptor(&project.config, &asset_key)?;
 
