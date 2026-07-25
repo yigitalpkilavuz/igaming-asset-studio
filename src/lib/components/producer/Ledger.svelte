@@ -17,12 +17,15 @@
     selectedKey,
     checked = $bindable([]),
     onselect,
+    ongenerateset,
   }: {
     gameId: string | null;
     assets: AssetDescriptor[];
     records: Record<string, AssetRecord>;
     config: GameConfig;
     view: "list" | "grid";
+    /** Open the set composer pre-selected with these symbol keys (tier-header ✦ Set…). */
+    ongenerateset?: (keys: string[]) => void;
     selectedKey: string | null;
     /** Multi-selection for batch actions (raster assets only). */
     checked?: string[];
@@ -63,6 +66,14 @@
     }
     return m;
   });
+
+  /** Symbols a tier can send to the set composer (expanded twins generate solo). */
+  function setEligible(g: { key: string; items: AssetDescriptor[] }): string[] {
+    if (!g.key.startsWith("symbols")) return [];
+    return g.items
+      .filter((a) => a.production === "raster" && !a.key.endsWith("_expanded"))
+      .map((a) => a.key);
+  }
 
   function mkGroup(key: string, label: string, items: AssetDescriptor[]) {
     return {
@@ -176,6 +187,13 @@
       <div class="group">
         <div class="ghead">
           <span class="glabel u-label">{g.label}</span>
+          {#if ongenerateset && setEligible(g).length >= 2}
+            <button
+              class="gset"
+              title="draw this whole tier together in ONE sheet for a perfectly consistent style, then cut into the individual symbols"
+              onclick={() => ongenerateset?.(setEligible(g))}
+            >✦ Set…</button>
+          {/if}
           {#if g.rasterTotal}
             <span class="gcount mono"><em>{g.ready}</em>/{g.rasterTotal}</span>
           {/if}
@@ -216,6 +234,13 @@
         <div class="srow" style="--cols: {Math.min(rasterItems.length, 6)}">
           <div class="shead">
             <span class="u-label">{g.label}</span>
+            {#if ongenerateset && setEligible(g).length >= 2}
+              <button
+                class="gset"
+                title="draw this whole tier together in ONE sheet for a perfectly consistent style, then cut into the individual symbols"
+                onclick={() => ongenerateset?.(setEligible(g))}
+              >✦ Set…</button>
+            {/if}
             <span class="gcount mono"><em>{g.ready}</em>/{g.rasterTotal}</span>
           </div>
           <div class="tiles">
@@ -279,6 +304,18 @@
   }
   .group {
     margin-bottom: 0.9rem;
+  }
+  .gset {
+    background: none;
+    border: none;
+    color: var(--bone-dim);
+    font-size: 0.66rem;
+    padding: 0 0.3rem;
+    cursor: pointer;
+    transition: color 120ms var(--ease);
+  }
+  .gset:hover {
+    color: var(--gold-bright);
   }
   .ghead {
     display: flex;

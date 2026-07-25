@@ -57,6 +57,12 @@
   let menuOpen = $state(false);
   let contactOpen = $state(false);
   let setKeys = $state<string[] | null>(null);
+  // Every symbol the set composer can include (expanded twins generate solo).
+  const setCandidates = $derived(
+    assets
+      .filter((a) => a.category === "symbols" && a.production === "raster" && !a.key.endsWith("_expanded"))
+      .map((a) => a.key),
+  );
   let legendOpen = $state(false);
 
   let view = $state<"list" | "grid">("list");
@@ -450,6 +456,9 @@
               <button class="mitem" onclick={() => { menuOpen = false; contactOpen = true; }}>
                 Contact sheet…
               </button>
+              <button class="mitem" onclick={() => { menuOpen = false; batchMsg = ""; error = ""; setKeys = []; }}>
+                Generate symbol set…
+              </button>
               <button class="mitem" onclick={() => { menuOpen = false; seedAll(); }} disabled={seeding || batchBusy}>
                 Seed subjects from Blueprint
               </button>
@@ -486,6 +495,7 @@
         selectedKey={assetKey}
         bind:checked
         onselect={pickAsset}
+        ongenerateset={(keys) => { batchMsg = ""; error = ""; setKeys = keys; }}
       />
     {:else}
       <div class="work">
@@ -499,6 +509,7 @@
             selectedKey={assetKey}
             bind:checked
             onselect={pickAsset}
+            ongenerateset={(keys) => { batchMsg = ""; error = ""; setKeys = keys; }}
           />
         </div>
         {#if descriptor && isRaster}
@@ -612,6 +623,7 @@
   <SetComposer
     gameId={savedId}
     assetKeys={setKeys}
+    candidates={setCandidates}
     providers={providersList}
     initialProvider={providersList.some((p) => p.id === batchProviderId && p.configured)
       ? batchProviderId

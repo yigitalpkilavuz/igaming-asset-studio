@@ -18,18 +18,33 @@
   let {
     gameId,
     assetKeys,
+    candidates,
     providers,
     initialProvider,
     onclose,
     oncommitted,
   }: {
     gameId: string;
+    /** Initially-selected symbol keys (tier button / batch bar); may be empty. */
     assetKeys: string[];
+    /** Every symbol the set could include — shown as toggleable chips. */
+    candidates: string[];
     providers: ProviderInfo[];
     initialProvider: string;
     onclose: () => void;
     oncommitted: (records: AssetRecord[]) => void;
   } = $props();
+
+  // svelte-ignore state_referenced_locally — deliberate initial capture.
+  let selected = $state<string[]>(candidates.filter((k) => assetKeys.includes(k)));
+
+  function toggleSymbol(key: string) {
+    if (busy) return;
+    // Keep selection in stable candidate order so cell numbering is predictable.
+    selected = selected.includes(key)
+      ? selected.filter((k) => k !== key)
+      : candidates.filter((k) => selected.includes(k) || k === key);
+  }
 
   let plan = $state<SetPlan | null>(null);
   let refKeys = $state<string[]>([]);
@@ -107,11 +122,22 @@
 
   $effect(() => {
     loadHistory();
-    commands.planSymbolSet(gameId, assetKeys).then((r) => {
+  });
+
+  // Re-plan whenever the selection changes; the auto prompt follows unless the user
+  // has taken it over.
+  $effect(() => {
+    const keys = [...selected];
+    if (keys.length < 2) {
+      plan = null;
+      return;
+    }
+    const wasAuto = prompt.trim() === autoPrompt.trim();
+    commands.planSymbolSet(gameId, keys).then((r) => {
       if (r.status === "ok") {
         plan = r.data;
         autoPrompt = r.data.positive;
-        prompt = r.data.positive;
+        if (wasAuto || !prompt.trim()) prompt = r.data.positive;
       } else {
         error = r.error;
       }
@@ -125,7 +151,7 @@
       sheet = await unwrap(
         commands.generateSymbolSetSheet(
           gameId,
-          assetKeys,
+          [...selected],
           providerId,
           overridden ? prompt : "",
           supportsRefs ? [...refKeys] : [],
@@ -149,7 +175,7 @@
     busy = "import";
     error = "";
     try {
-      sheet = await unwrap(commands.importSymbolSetSheet(gameId, assetKeys, path));
+      sheet = await unwrap(commands.importSymbolSetSheet(gameId, [...selected], path));
       sheetSource = "imported";
       await loadHistory();
     } catch (e) {
@@ -244,7 +270,7 @@
     <header>
       <div class="head-text">
         <span class="u-label">Symbol set</span>
-        <h3>One sheet, one style — cut into {assetKeys.length} symbols</h3>
+        <h3>One sheet, one style — cut into individual symbols</h3>
       </div>
       {#if plan}
         <span class="grid-badge mono" title="sheet grid — reading order left→right, top→bottom">
@@ -259,15 +285,26 @@
 
     <div class="body">
       <div class="left">
-        {#if plan}
+        <div class="field">
+          <span class="f-label">
+            Symbols in the set
+            <em class="f-note">{selected.length} picked{selected.length < 2 ? " — pick at least two" : ""}</em>
+          </span>
           <div class="cells">
-            {#each plan.cells as c, i (c.assetKey)}
-              <span class="cell-chip" title={c.label}>
-                <b>{i + 1}</b>{c.assetKey.replace("symbol_", "")}
-              </span>
+            {#each candidates as key (key)}
+              {@const idx = selected.indexOf(key)}
+              <button
+                class="cell-chip"
+                class:on={idx >= 0}
+                disabled={!!busy}
+                title={idx >= 0 ? "click to drop from the set" : "click to include in the set"}
+                onclick={() => toggleSymbol(key)}
+              >
+                {#if idx >= 0}<b>{idx + 1}</b>{/if}{key.replace("symbol_", "")}
+              </button>
             {/each}
           </div>
-        {/if}
+        </div>
 
         <label class="field">
           <span class="f-label">Provider</span>
@@ -411,10 +448,10 @@
     </div>
 
     <footer>
-      <button onclick={generate} disabled={!!busy || !plan || !providerId}>
+      <button onclick={generate} disabled={!!busy || !plan || selected.length < 2 || !providerId}>
         {busy === "gen" ? "Generating…" : sheet ? "✦ Reroll sheet" : "✦ Generate sheet"}
       </button>
-      <button class="ghost with-icon" onclick={importSheet} disabled={!!busy || !plan} title="use your own image as the sheet — same grid, same cut">
+      <button class="ghost with-icon" onclick={importSheet} disabled={!!busy || !plan || selected.length < 2} title="use your own image as the sheet — same grid, same cut">
         <Upload size={13} strokeWidth={1.75} />
         Upload sheet…
       </button>
@@ -519,11 +556,18 @@
     gap: var(--space-1);
     font-family: var(--font-mono);
     font-size: 0.68rem;
-    color: var(--bone);
-    background: var(--ink-2);
+    color: var(--bone-dim);
+    background: none;
     border: 1px solid var(--line);
     border-radius: var(--radius-1, 4px);
-    padding: 2px var(--space-2) 2px var(--space-1);
+    padding: 2px var(--space-2);
+    cursor: pointer;
+  }
+  .cell-chip.on {
+    color: var(--bone);
+    background: var(--ink-2);
+    border-color: var(--gold-deep);
+    padding-left: var(--space-1);
   }
   .cell-chip b {
     font-weight: 600;
