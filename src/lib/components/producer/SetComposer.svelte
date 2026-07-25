@@ -10,6 +10,7 @@
     type ProviderInfo,
     type SetPlan,
     type SetSheet,
+    type SetSheetInfo,
   } from "$lib/ipc";
   import { open } from "@tauri-apps/plugin-dialog";
   import { Grid3x3, Scissors, Upload, X } from "@lucide/svelte";
@@ -42,6 +43,7 @@
   // owns its provider choice after opening.
   let providerId = $state(initialProvider);
   let sheet = $state<SetSheet | null>(null);
+  let history = $state<SetSheetInfo[]>([]);
   let sheetSource = $state<"" | "generated" | "imported">("");
   let showCuts = $state(true);
   let busy = $state<"" | "gen" | "import" | "cut">("");
@@ -86,7 +88,25 @@
     else if (refKeys.length < MAX_REFS) refKeys = [...refKeys, key];
   }
 
+  async function loadHistory() {
+    const r = await commands.listSymbolSetSheets(gameId);
+    if (r.status === "ok") history = r.data;
+  }
+
+  async function selectSheet(id: string) {
+    if (busy || sheet?.id === id) return;
+    error = "";
+    try {
+      sheet = await unwrap(commands.selectSymbolSetSheet(gameId, id));
+      sheetSource = "";
+      await loadHistory();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   $effect(() => {
+    loadHistory();
     commands.planSymbolSet(gameId, assetKeys).then((r) => {
       if (r.status === "ok") {
         plan = r.data;
@@ -112,6 +132,7 @@
         ),
       );
       sheetSource = "generated";
+      await loadHistory();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -130,6 +151,7 @@
     try {
       sheet = await unwrap(commands.importSymbolSetSheet(gameId, assetKeys, path));
       sheetSource = "imported";
+      await loadHistory();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -346,6 +368,21 @@
             <div class="busy-veil mono">{busy === "gen" ? "Redrawing…" : "Reading…"}</div>
           {/if}
         </div>
+        {#if history.length > 1 || (history.length === 1 && !sheet)}
+          <div class="strip" title="sheet history — every roll is kept; click to go back to one">
+            {#each history as hSheet (hSheet.id)}
+              <button
+                class="hthumb"
+                class:on={sheet?.id === hSheet.id}
+                disabled={!!busy}
+                title="{hSheet.id} · {hSheet.rows}×{hSheet.cols} · {hSheet.symbolCount} symbols"
+                onclick={() => selectSheet(hSheet.id)}
+              >
+                <img src={hSheet.thumb} alt={hSheet.id} />
+              </button>
+            {/each}
+          </div>
+        {/if}
         {#if sheet}
           <div class="under">
             <label class="cuts-toggle">
@@ -366,7 +403,7 @@
               title={plan !== null && (sheet.cols !== plan.cols || sheet.rows !== plan.rows)
                 ? `the model drew a ${sheet.rows}×${sheet.cols} layout instead of the requested ${plan.rows}×${plan.cols} — the cut follows the image, so this is fine`
                 : "detected grid"}>
-              {sheetSource} · {sheet.rows}×{sheet.cols}
+              {sheetSource || sheet.id} · {sheet.rows}×{sheet.cols}
             </span>
           </div>
         {/if}
@@ -680,6 +717,31 @@
     color: var(--bone);
   }
 
+  .strip {
+    display: flex;
+    gap: var(--space-1);
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+  .hthumb {
+    flex: none;
+    width: 64px;
+    height: 44px;
+    padding: 2px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-1, 4px);
+    background: var(--ink-2);
+    overflow: hidden;
+    cursor: pointer;
+  }
+  .hthumb.on {
+    border-color: var(--gold-bright);
+  }
+  .hthumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
   .under {
     display: flex;
     align-items: center;

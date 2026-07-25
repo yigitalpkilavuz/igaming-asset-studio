@@ -117,6 +117,16 @@ export const commands = {
 	 */
 	importSymbolSetSheet: (gameId: string, assetKeys: string[], path: string) => typedError<SetSheet, string>(__TAURI_INVOKE("import_symbol_set_sheet", { gameId, assetKeys, path })),
 	/**
+	 *  The game's symbol-set sheet history: every generated/imported sheet kept (capped),
+	 *  so a reroll is never destructive.
+	 */
+	listSymbolSetSheets: (gameId: string) => typedError<SetSheetInfo[], string>(__TAURI_INVOKE("list_symbol_set_sheets", { gameId })),
+	/**
+	 *  Make a history sheet the CURRENT cut candidate again and return its full preview
+	 *  (its own grid + seams, exactly as it was).
+	 */
+	selectSymbolSetSheet: (gameId: string, sheetId: string) => typedError<SetSheet, string>(__TAURI_INVOKE("select_symbol_set_sheet", { gameId, sheetId })),
+	/**
 	 *  Manual override for the pending sheet's cut: change the grid (seams re-detect for
 	 *  the new shape) or pin exact seam positions (fractions 0–1, from dragging the lines
 	 *  in the preview). Persisted into the pending meta, so Commit cuts exactly this.
@@ -1237,11 +1247,24 @@ export type SetPlanCell = {
  *  Seams are fractions of the sheet's width/height (internal boundaries only).
  */
 export type SetSheet = {
+	/**  History id of this sheet (e.g. "s003") — select/adjust/commit address it. */
+	id: string,
 	png: string,
 	cols: number,
 	rows: number,
 	seamsX: (number | null)[],
 	seamsY: (number | null)[],
+};
+
+/**  One entry of a game's sheet history (newest last), thumb-sized for the filmstrip. */
+export type SetSheetInfo = {
+	id: string,
+	thumb: string,
+	cols: number,
+	rows: number,
+	createdAt: number | null,
+	symbolCount: number,
+	current: boolean,
 };
 
 export type Slot = {

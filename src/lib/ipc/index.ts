@@ -68,6 +68,7 @@ export type {
   ContactCell,
   SetPlan,
   SetSheet,
+  SetSheetInfo,
 } from "./bindings";
 
 /** Result shape tauri-specta emits for commands that return `Result<T, String>`. */

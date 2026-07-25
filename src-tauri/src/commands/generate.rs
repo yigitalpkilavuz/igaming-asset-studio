@@ -451,6 +451,8 @@ pub struct SetPlan {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SetSheet {
+    /// History id of this sheet (e.g. "s003") — select/adjust/commit address it.
+    pub id: String,
     pub png: String,
     pub cols: u32,
     pub rows: u32,
@@ -461,6 +463,8 @@ pub struct SetSheet {
 /// Pending-sheet sidecar so Commit cuts exactly what the preview showed.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SetPendingMeta {
+    #[serde(default)]
+    created_at: f64,
     asset_keys: Vec<String>,
     cols: u32,
     rows: u32,
@@ -471,6 +475,71 @@ struct SetPendingMeta {
 
 fn set_pending_dir(base: &std::path::Path, game_id: &str) -> std::path::PathBuf {
     storage::project_dir(base, game_id).join("set_pending")
+}
+
+/// How many sheets a game keeps in its set history (oldest pruned beyond this).
+const SET_HISTORY_CAP: usize = 12;
+
+fn sheet_ids(root: &std::path::Path) -> Vec<String> {
+    let mut ids: Vec<String> = std::fs::read_dir(root)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().join("sheet.png").is_file())
+                .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids
+}
+
+fn next_sheet_id(root: &std::path::Path) -> String {
+    let max = sheet_ids(root)
+        .iter()
+        .filter_map(|id| id.strip_prefix('s').and_then(|n| n.parse::<u32>().ok()))
+        .max()
+        .unwrap_or(0);
+    format!("s{:03}", max + 1)
+}
+
+/// The current sheet's directory, migrating the pre-history single-slot layout
+/// (sheet.png directly in set_pending/) into "s001" on first touch.
+fn current_sheet_dir(
+    base: &std::path::Path,
+    game_id: &str,
+) -> Result<(String, std::path::PathBuf), String> {
+    let root = set_pending_dir(base, game_id);
+    // Legacy migration: single-slot layout → s001.
+    if root.join("sheet.png").is_file() {
+        let dir = root.join("s001");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("migrate pending: {e}"))?;
+        for f in ["sheet.png", "meta.json"] {
+            let _ = std::fs::rename(root.join(f), dir.join(f));
+        }
+        std::fs::write(root.join("current.txt"), "s001")
+            .map_err(|e| format!("write current: {e}"))?;
+    }
+    let id = std::fs::read_to_string(root.join("current.txt"))
+        .map(|s| s.trim().to_string())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "no pending sheet — generate one first".to_string())?;
+    let dir = root.join(&id);
+    if !dir.join("sheet.png").is_file() {
+        return Err("no pending sheet — generate one first".into());
+    }
+    Ok((id, dir))
+}
+
+fn write_sheet_thumb(dir: &std::path::Path, sheet: &image::RgbaImage) -> Result<(), String> {
+    let thumb = image::DynamicImage::ImageRgba8(sheet.clone())
+        .resize(256, 256, image::imageops::FilterType::Triangle);
+    let mut buf = std::io::Cursor::new(Vec::new());
+    thumb
+        .write_to(&mut buf, image::ImageFormat::Png)
+        .map_err(|e| format!("encode thumb: {e}"))?;
+    std::fs::write(dir.join("thumb.png"), buf.into_inner())
+        .map_err(|e| format!("write thumb: {e}"))
 }
 
 /// Resolve selected symbol keys → ordered (asset_key, cell description) + grid shape +
@@ -688,10 +757,17 @@ fn hold_pending_sheet(
     let seams_x = best_seams(&col_profile(&mask, w, h), w, cols);
     let seams_y = best_seams(&row_profile(&mask, w, h), h, rows);
 
-    let dir = set_pending_dir(base, game_id);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create pending dir: {e}"))?;
+    // Every sheet lands in the game's HISTORY (own slot + thumb) and becomes current —
+    // a reroll never destroys the previous roll; the composer can go back.
+    let root = set_pending_dir(base, game_id);
+    std::fs::create_dir_all(&root).map_err(|e| format!("create pending dir: {e}"))?;
+    let id = next_sheet_id(&root);
+    let dir = root.join(&id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create sheet dir: {e}"))?;
     std::fs::write(dir.join("sheet.png"), png).map_err(|e| format!("write pending sheet: {e}"))?;
+    write_sheet_thumb(&dir, sheet)?;
     let meta = SetPendingMeta {
+        created_at: crate::commands::now_ms(),
         asset_keys,
         cols,
         rows,
@@ -704,13 +780,111 @@ fn hold_pending_sheet(
         serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("write pending meta: {e}"))?;
+    std::fs::write(root.join("current.txt"), &id).map_err(|e| format!("write current: {e}"))?;
+    // Prune beyond the cap, oldest first (never the current one).
+    let ids = sheet_ids(&root);
+    if ids.len() > SET_HISTORY_CAP {
+        for old in &ids[..ids.len() - SET_HISTORY_CAP] {
+            if old != &id {
+                let _ = std::fs::remove_dir_all(root.join(old));
+            }
+        }
+    }
 
     Ok(SetSheet {
+        id,
         png: data_url_png(png),
         cols,
         rows,
         seams_x: seams_x.iter().map(|&x| x as f64 / w as f64).collect(),
         seams_y: seams_y.iter().map(|&y| y as f64 / h as f64).collect(),
+    })
+}
+
+/// One entry of a game's sheet history (newest last), thumb-sized for the filmstrip.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSheetInfo {
+    pub id: String,
+    pub thumb: String,
+    pub cols: u32,
+    pub rows: u32,
+    pub created_at: f64,
+    pub symbol_count: u32,
+    pub current: bool,
+}
+
+/// The game's symbol-set sheet history: every generated/imported sheet kept (capped),
+/// so a reroll is never destructive.
+#[tauri::command]
+#[specta::specta]
+pub fn list_symbol_set_sheets(
+    app: tauri::AppHandle,
+    game_id: String,
+) -> Result<Vec<SetSheetInfo>, String> {
+    let base = projects_root(&app)?;
+    let root = set_pending_dir(&base, &game_id);
+    let current = std::fs::read_to_string(root.join("current.txt"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for id in sheet_ids(&root) {
+        let dir = root.join(&id);
+        let Ok(meta) = std::fs::read(dir.join("meta.json"))
+            .map_err(|e| e.to_string())
+            .and_then(|b| serde_json::from_slice::<SetPendingMeta>(&b).map_err(|e| e.to_string()))
+        else {
+            continue;
+        };
+        // Thumb may be missing on migrated legacy slots — derive it lazily.
+        if !dir.join("thumb.png").is_file() {
+            if let Ok(img) = image::open(dir.join("sheet.png")) {
+                let _ = write_sheet_thumb(&dir, &img.to_rgba8());
+            }
+        }
+        let thumb = std::fs::read(dir.join("thumb.png")).map(|b| data_url_png(&b)).unwrap_or_default();
+        out.push(SetSheetInfo {
+            current: id == current,
+            id,
+            thumb,
+            cols: meta.cols,
+            rows: meta.rows,
+            created_at: meta.created_at,
+            symbol_count: meta.asset_keys.len() as u32,
+        });
+    }
+    Ok(out)
+}
+
+/// Make a history sheet the CURRENT cut candidate again and return its full preview
+/// (its own grid + seams, exactly as it was).
+#[tauri::command]
+#[specta::specta]
+pub fn select_symbol_set_sheet(
+    app: tauri::AppHandle,
+    game_id: String,
+    sheet_id: String,
+) -> Result<SetSheet, String> {
+    let base = projects_root(&app)?;
+    let root = set_pending_dir(&base, &game_id);
+    let dir = root.join(&sheet_id);
+    let png = std::fs::read(dir.join("sheet.png"))
+        .map_err(|_| format!("sheet \"{sheet_id}\" not found in history"))?;
+    let meta: SetPendingMeta = serde_json::from_slice(
+        &std::fs::read(dir.join("meta.json")).map_err(|e| format!("read sheet meta: {e}"))?,
+    )
+    .map_err(|e| format!("bad sheet meta: {e}"))?;
+    let (w, h) = image::image_dimensions(dir.join("sheet.png"))
+        .map_err(|e| format!("read sheet dims: {e}"))?;
+    std::fs::write(root.join("current.txt"), &sheet_id)
+        .map_err(|e| format!("write current: {e}"))?;
+    Ok(SetSheet {
+        id: sheet_id,
+        png: data_url_png(&png),
+        cols: meta.cols,
+        rows: meta.rows,
+        seams_x: meta.seams_x.iter().map(|&x| x as f64 / w as f64).collect(),
+        seams_y: meta.seams_y.iter().map(|&y| y as f64 / h as f64).collect(),
     })
 }
 
@@ -729,7 +903,7 @@ pub async fn adjust_symbol_set(
     seams_y: Vec<f64>,
 ) -> Result<SetSheet, String> {
     let base = projects_root(&app)?;
-    let dir = set_pending_dir(&base, &game_id);
+    let (id, dir) = current_sheet_dir(&base, &game_id)?;
     let png = std::fs::read(dir.join("sheet.png"))
         .map_err(|_| "no pending sheet — generate one first".to_string())?;
     let mut meta: SetPendingMeta = serde_json::from_slice(
@@ -780,6 +954,7 @@ pub async fn adjust_symbol_set(
         .map_err(|e| format!("write pending meta: {e}"))?;
 
         Ok(SetSheet {
+            id,
             png: data_url_png(&png),
             cols,
             rows,
@@ -801,7 +976,7 @@ pub async fn commit_symbol_set(
     game_id: String,
 ) -> Result<Vec<AssetRecord>, String> {
     let base = projects_root(&app)?;
-    let dir = set_pending_dir(&base, &game_id);
+    let (_id, dir) = current_sheet_dir(&base, &game_id)?;
     let png = std::fs::read(dir.join("sheet.png"))
         .map_err(|_| "no pending sheet — generate one first".to_string())?;
     let meta: SetPendingMeta = serde_json::from_slice(
@@ -858,7 +1033,7 @@ pub async fn commit_symbol_set(
             storage::write_asset_record(&base, &game_id, &record)?;
             records.push(record);
         }
-        let _ = std::fs::remove_dir_all(&dir);
+        // History survives the commit — an old sheet can be re-selected and re-cut.
         Ok(records)
     })
     .await

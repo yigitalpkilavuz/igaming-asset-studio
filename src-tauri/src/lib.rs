@@ -62,6 +62,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::generate::plan_symbol_set,
         commands::generate::generate_symbol_set_sheet,
         commands::generate::import_symbol_set_sheet,
+        commands::generate::list_symbol_set_sheets,
+        commands::generate::select_symbol_set_sheet,
         commands::generate::adjust_symbol_set,
         commands::generate::commit_symbol_set,
         commands::generate::alpha_erase,
