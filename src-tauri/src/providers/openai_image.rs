@@ -41,7 +41,7 @@ impl OpenAiImage {
         let mut form = reqwest::multipart::Form::new()
             .text("model", self.model.clone())
             .text("prompt", prompt.to_string())
-            .text("size", nearest_size(w, h).to_string())
+            .text("size", size_param(&self.model, w, h))
             .text("n", "1");
         for (i, bytes) in references.iter().enumerate() {
             let part = reqwest::multipart::Part::bytes(bytes.clone())
@@ -83,22 +83,46 @@ impl OpenAiImage {
     }
 }
 
-/// Map a requested aspect to the nearest gpt-image-1 supported size.
-fn nearest_size(w: u32, h: u32) -> &'static str {
-    if w as f32 > h as f32 * 1.2 {
-        "1536x1024"
-    } else if h as f32 > w as f32 * 1.2 {
-        "1024x1536"
-    } else {
-        "1024x1024"
+/// The size parameter for the model in use.
+///
+/// gpt-image-2 accepts CUSTOM sizes: both edges divisible by 16, aspect within
+/// 1:3–3:1, max edge 3840 — so it gets the true requested canvas (a 16:9 background
+/// generates at real 16:9, not the legacy 3:2). The gpt-image-1 family only offers
+/// three fixed sizes; requests snap to the nearest.
+fn size_param(model: &str, w: u32, h: u32) -> String {
+    if model.starts_with("gpt-image-1") {
+        return (if w as f32 > h as f32 * 1.2 {
+            "1536x1024"
+        } else if h as f32 > w as f32 * 1.2 {
+            "1024x1536"
+        } else {
+            "1024x1024"
+        })
+        .to_string();
     }
+    // Clamp aspect into the supported 1:3–3:1 window, round to /16, cap the long edge.
+    let (mut w, mut h) = (w.max(16) as f64, h.max(16) as f64);
+    if w > h * 3.0 {
+        w = h * 3.0;
+    } else if h > w * 3.0 {
+        h = w * 3.0;
+    }
+    let cap = 3840.0;
+    let long = w.max(h);
+    if long > cap {
+        let s = cap / long;
+        w *= s;
+        h *= s;
+    }
+    let r16 = |v: f64| (((v / 16.0).round() as u32).max(1) * 16).min(3840);
+    format!("{}x{}", r16(w), r16(h))
 }
 
 #[derive(Serialize)]
 struct ImageRequest<'a> {
     model: &'a str,
     prompt: &'a str,
-    size: &'a str,
+    size: String,
     /// Only sent to models that support it (gpt-image-1.x). gpt-image-2 rejects it.
     #[serde(skip_serializing_if = "Option::is_none")]
     background: Option<&'a str>,
@@ -168,7 +192,7 @@ impl ImageProvider for OpenAiImage {
         let body = ImageRequest {
             model: &self.model,
             prompt: &prompt,
-            size: nearest_size(req.width, req.height),
+            size: size_param(&self.model, req.width, req.height),
             background: native_ok.then_some("transparent"),
             n: 1,
         };
@@ -285,4 +309,30 @@ pub fn edit_size(w: u32, h: u32) -> String {
     };
     let r16 = |v: f64| (((v / 16.0).round()).max(1.0) * 16.0) as u32;
     format!("{}x{}", r16(tw), r16(th))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::size_param;
+
+    #[test]
+    fn gpt_image_2_gets_true_custom_sizes() {
+        // 16:9 background generates at real 16:9 (both edges /16), not legacy 3:2.
+        assert_eq!(size_param("gpt-image-2", 2048, 1152), "2048x1152");
+        // Symbol square passes through.
+        assert_eq!(size_param("gpt-image-2", 1024, 1024), "1024x1024");
+        // Extreme column aspect clamps into the 1:3 window.
+        assert_eq!(size_param("gpt-image-2", 512, 2560), "512x1536");
+        // Oversized requests cap at the 3840 long edge, aspect preserved.
+        assert_eq!(size_param("gpt-image-2", 8192, 4608), "3840x2160");
+        // Odd dims round to /16.
+        assert_eq!(size_param("gpt-image-2", 1000, 700), "1008x704");
+    }
+
+    #[test]
+    fn gpt_image_1_snaps_to_its_three_fixed_sizes() {
+        assert_eq!(size_param("gpt-image-1", 2048, 1152), "1536x1024");
+        assert_eq!(size_param("gpt-image-1-mini", 1024, 1536), "1024x1536");
+        assert_eq!(size_param("gpt-image-1", 1100, 1024), "1024x1024");
+    }
 }
