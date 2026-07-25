@@ -1,0 +1,278 @@
+/* ============================================================================
+   The Studio — Asset Pipeline · base element styles.
+   ALL design tokens live in lib/styles/tokens.css (the single source of truth);
+   this file applies them to bare elements and the shared utility classes.
+   ============================================================================ */
+
+@import "./lib/styles/tokens.css";
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--ink);
+  overflow: hidden;
+}
+
+::selection {
+  background: var(--gold-glow);
+  color: var(--gold-bright);
+}
+
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ash-deep);
+  background-clip: padding-box;
+}
+
+/* ── Typography ───────────────────────────────────────────────────────────── */
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  color: var(--bone);
+  margin: 0;
+  letter-spacing: -0.015em;
+}
+
+.display {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+/* Micro label: small, quiet, modest tracking */
+.u-label {
+  font-family: var(--font-sans);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ash);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+}
+
+.catalog-num {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  color: var(--ash);
+}
+
+.muted {
+  color: var(--ash);
+}
+
+/* Legacy ornament hooks — neutralised in the minimal system */
+.fleuron {
+  color: var(--ash-deep);
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────────── */
+
+button {
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  font-weight: 550;
+  letter-spacing: -0.005em;
+  color: var(--bone-dim);
+  background: var(--ink-3);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.85rem;
+  cursor: pointer;
+  transition:
+    color 0.16s var(--ease),
+    border-color 0.16s var(--ease),
+    background 0.16s var(--ease),
+    opacity 0.16s var(--ease);
+}
+button:hover:not(:disabled) {
+  color: var(--bone);
+  border-color: var(--ash-deep);
+  background: var(--ink-4);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Primary — crisp near-white (the one emphatic action) */
+button.gold {
+  background: var(--bone);
+  color: var(--ink);
+  border-color: var(--bone);
+  font-weight: 600;
+}
+button.gold:hover:not(:disabled) {
+  background: var(--bone);
+  border-color: var(--bone);
+  color: var(--ink);
+  filter: brightness(1.06);
+}
+
+/* Quiet ghost — text only */
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ash);
+}
+button.ghost:hover:not(:disabled) {
+  color: var(--bone);
+  background: var(--ink-3);
+}
+
+button.danger:hover:not(:disabled) {
+  color: var(--oxblood);
+  border-color: var(--oxblood);
+  background: transparent;
+}
+
+input,
+textarea,
+select {
+  font-family: var(--font-sans);
+  font-size: 0.88rem;
+  color: var(--bone);
+  background: var(--ink-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.7rem;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--ash-deep);
+}
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--gold-deep);
+  box-shadow: 0 0 0 3px var(--gold-glow);
+}
+input.mono,
+select {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+textarea {
+  resize: vertical;
+  line-height: 1.55;
+}
+
+/* ── Surfaces ─────────────────────────────────────────────────────────────── */
+
+.card {
+  position: relative;
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+/* Corner ticks removed in the minimal system */
+.ticked::before,
+.ticked::after {
+  display: none;
+}
+
+.hairline {
+  height: 1px;
+  background: var(--line);
+  border: 0;
+  margin: 0;
+}
+
+/* Alpha checkerboard (neutral, theme-aware) */
+.checker {
+  background-color: var(--checker-a);
+  background-image:
+    linear-gradient(45deg, var(--checker-b) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--checker-b) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--checker-b) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--checker-b) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+/* ── Pipeline pips ────────────────────────────────────────────────────────── */
+.pips {
+  display: inline-flex;
+  gap: 3px;
+}
+.pip {
+  width: 13px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--line-2);
+  transition: background 0.25s var(--ease);
+}
+.pip.done {
+  background: var(--gold);
+}
+.pip.ready {
+  background: var(--sage);
+}
+
+/* ── Motion (subtle, quick) ───────────────────────────────────────────────── */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise {
+  animation: rise 0.32s var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

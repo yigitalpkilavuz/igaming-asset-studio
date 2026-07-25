@@ -1,0 +1,56 @@
+[package]
+name = "asset-pipeline"
+version = "0.1.0"
+description = "Wishfell Asset Pipeline — slot-game art asset manager"
+authors = ["Wishfell"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "asset_pipeline_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Typed IPC bindings (Rust model + commands -> TS). specta v2 is still RC, so pin exactly.
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+specta-typescript = "0.0.12"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+
+# Secrets (API keys) in the OS keychain.
+keyring = { version = "3", features = ["apple-native"] }
+# HTTP client for OpenAI (prompts + gpt-image-1). rustls to avoid an OpenSSL dep.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
+base64 = "0.22"
+async-trait = "0.1"
+futures = "0.3"
+sha2 = "0.10"
+
+# Post-processing: image decode/resize/encode + WebP (lossy, quality-controlled).
+image = "0.25"
+webp = "0.3"
+tauri-plugin-dialog = "2.7.1"
+
+# Local Segment-Anything (MobileSAM) for the Animation Studio's interactive cuts.
+candle-core = "0.9"
+candle-nn = "0.9"
+candle-transformers = "0.9"
+tauri-plugin-clipboard-manager = "2.3.2"
+tokio = { version = "1.53.1", features = ["time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.9", features = ["metal"] }
+candle-nn = { version = "0.9", features = ["metal"] }
+candle-transformers = { version = "0.9", features = ["metal"] }
+

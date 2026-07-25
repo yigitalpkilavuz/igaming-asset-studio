@@ -1,0 +1,184 @@
+/* ============================================================================
+   TOKENS — the single source of truth for the design system.
+
+   Direction: "Instrument, refined" + pro-tool density on work surfaces.
+   A neutral lightbox for any game's art: cool graphite, one confident amber
+   accent (= "ready"), clear signal colours, quiet fast motion. Personality
+   lives in the finish, not in ornament.
+
+   RULES
+   - Components consume tokens only — no raw colors, px paddings, shadows,
+     easings or font stacks in component CSS.
+   - Spacing sits on the 8px rhythm (--space-*). Half-steps exist for tight UI.
+   - One --gold action per screen. Amber always means "ready / primary".
+   - Canvas-heavy work surfaces (Studio, Layers) opt into `.density-compact`.
+   ============================================================================ */
+
+/* Bundled locally via Fontsource — no network, Tauri-safe. */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+/* Open Props raw material (shadow stacks + easing curves). Aliased below —
+   components never reference op names directly. */
+@import "open-props/shadows";
+@import "open-props/easings";
+
+:root {
+  /* ── Color · graphite surfaces (soft cool dark, lifted off pure black) ── */
+  --ink: #14161b;
+  --ink-2: #1a1c22;
+  --ink-3: #1f2229;
+  --ink-4: #262a32;
+  --ink-5: #2e323b;
+
+  /* Hairlines (use sparingly — prefer spacing + elevation for separation) */
+  --line: #2b2e36;
+  --line-2: #3b3f4a;
+
+  /* Ink you read (soft cool off-white — readable, never glaring) */
+  --bone: #dde0e6;
+  --bone-dim: #9ba0ab;
+  --ash: #717783;
+  --ash-deep: #545962;
+
+  /* Accent — one confident amber. Scarce by design: amber = ready/shippable. */
+  --gold: #d9a944;
+  --gold-bright: #edc76a;
+  --gold-deep: #8a6d2e;
+  --gold-glow: rgba(217, 169, 68, 0.16);
+
+  /* Status — clear signals, not aged pastels */
+  --oxblood: #e0716a; /* destructive / error */
+  --sage: #7fc584; /* success / done */
+  --lapis: #6fa7dd; /* info */
+
+  /* Interaction washes (hover/selection tints) + alpha checkerboard cells */
+  --wash: rgba(255, 255, 255, 0.055);
+  --wash-soft: rgba(255, 255, 255, 0.03);
+  --wash-faint: rgba(255, 255, 255, 0.02);
+  --checker-a: #1b1d23;
+  --checker-b: #24262d;
+  --scrim: rgba(10, 11, 14, 0.68);
+
+  /* ── Typography ─────────────────────────────────────────────────────────── */
+  --font-sans: "Inter Variable", "SF Pro Text", -apple-system, "Helvetica Neue",
+    "Segoe UI", Arial, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "SF Mono", "Menlo", ui-monospace, monospace;
+
+  /* Size scale (rem on a 15px root). --text-ui is the density-aware control size. */
+  --text-xs: 0.68rem;
+  --text-sm: 0.75rem;
+  --text-md: 0.8rem;
+  --text-body: 0.85rem;
+  --text-lg: 1.05rem;
+  --text-xl: 1.45rem;
+  --text-ui: var(--text-md);
+
+  --weight-normal: 450;
+  --weight-medium: 550;
+  --weight-semibold: 600;
+  --tracking-tight: -0.015em;
+  --tracking-label: 0.04em;
+
+  /* ── Spacing · 8px rhythm (2 and 4 are the sanctioned half-steps) ───────── */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 48px;
+
+  /* ── Radii ──────────────────────────────────────────────────────────────── */
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-round: 999px;
+
+  /* ── Elevation · layered shadows (Open Props stacks, graphite-tuned).
+       elev-1 = raised control · elev-2 = floating panel/rail · elev-3 = modal */
+  --shadow-color: 228 20% 3%;
+  --shadow-strength: 12%;
+  --elev-1: var(--shadow-2);
+  --elev-2: var(--shadow-4);
+  --elev-3: var(--shadow-6);
+
+  /* ── Motion · fast and quiet — nothing bounces on an instrument ─────────── */
+  --dur-fast: 120ms;
+  --dur-med: 200ms;
+  --dur-slow: 320ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: var(--ease-in-out-3); /* op alias */
+
+  /* ── Z-index registry (never invent values in components) ───────────────── */
+  --z-canvas: 1;
+  --z-rail: 5;
+  --z-dock: 10;
+  --z-bar: 30;
+  --z-modal: 60;
+  --z-toast: 80;
+
+  /* ── Control sizing (density-aware) ─────────────────────────────────────── */
+  --control-h: 30px;
+  --pad-panel: var(--space-5);
+  --gap-panel: var(--space-4);
+
+  color-scheme: dark;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  color: var(--bone);
+  background: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* ── Pro-tool density: canvas-heavy work surfaces (Studio, Layers) opt in on
+   their root element. Controls tighten; the artwork gets the pixels. ── */
+.density-compact {
+  --control-h: 24px;
+  --pad-panel: var(--space-4);
+  --gap-panel: var(--space-3);
+  --text-ui: var(--text-sm);
+}
+
+/* ── Light theme — same instrument on paper. Semantics unchanged: --ink is
+   still "the ground", --bone still "the ink you read", amber still = ready. ── */
+:root[data-theme="light"] {
+  --ink: #e9ebef;
+  --ink-2: #f1f2f5;
+  --ink-3: #f4f5f7;
+  --ink-4: #e1e3e9;
+  --ink-5: #d8dbe2;
+
+  --line: #d4d7de;
+  --line-2: #c2c6cf;
+
+  --bone: #262a33;
+  --bone-dim: #4a505b;
+  --ash: #6d7380;
+  --ash-deep: #999fab;
+
+  /* Amber deepens for contrast on paper; still the same accent, same meaning. */
+  --gold: #a87d22;
+  --gold-bright: #8a6414;
+  --gold-deep: #c9a24e;
+  --gold-glow: rgba(168, 125, 34, 0.14);
+
+  --oxblood: #c7473e;
+  --sage: #2f8f3f;
+  --lapis: #2f6fb5;
+
+  --wash: rgba(15, 20, 30, 0.06);
+  --wash-soft: rgba(15, 20, 30, 0.035);
+  --wash-faint: rgba(15, 20, 30, 0.025);
+  --checker-a: #e0e2e8;
+  --checker-b: #d4d7dd;
+  --scrim: rgba(38, 42, 51, 0.42);
+
+  --shadow-color: 220 20% 40%;
+  --shadow-strength: 4%;
+
+  color-scheme: light;
+}
