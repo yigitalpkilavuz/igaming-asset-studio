@@ -41,6 +41,9 @@
   let selectedId = $state<string | null>(null);
   let maskUrls = $state<Record<string, string>>({});
   let candidate = $state<{ url: string; area?: number } | null>(null);
+  // "manual" = the user's own strokes (NEVER silently discarded — auto-applied on
+  // part switch / leave); "proposal" = SAM/cloud suggestion (discarded unless applied).
+  let candidateFrom = $state<"" | "manual" | "proposal">("");
   let prompts = $state<SamPrompt[]>([]);
   let tool = $state<"point" | "brush" | "erase" | "lasso" | "lassoErase">("point");
   let brushSize = $state(24);
@@ -303,9 +306,33 @@
     if (url) maskUrls = { ...maskUrls, [partId]: url };
   }
 
+  /** Persist a mask to a part (shared by Apply, part-switch auto-apply, unmount flush). */
+  async function commitMaskTo(partId: string, url: string, pts: typeof prompts) {
+    const updated = await unwrap(
+      commands.studioSetMask(gameId, assetKey, partId, url, $state.snapshot(pts)),
+    );
+    Object.assign(doc, updated);
+    maskUrls = { ...maskUrls, [partId]: url };
+    if (doc.parts.find((p) => p.id === partId)?.bbox) {
+      dirtySinceCut = new Set([...dirtySinceCut, partId]);
+    }
+    refreshInpaint();
+  }
+
   function selectPart(id: string) {
+    // Manual strokes are real work — commit them before moving on. Proposals stay
+    // opt-in and are dropped as before.
+    if (candidate && candidateFrom === "manual" && selectedId && selectedId !== id) {
+      const partId = selectedId;
+      const url = candidate.url;
+      const pts = prompts;
+      commitMaskTo(partId, url, pts).catch((e) => {
+        error = e instanceof Error ? e.message : String(e);
+      });
+    }
     selectedId = id;
     candidate = null;
+    candidateFrom = "";
     prompts = doc.parts.find((p) => p.id === id)?.prompts ?? [];
   }
 
@@ -354,12 +381,22 @@
     try {
       const r = await unwrap(commands.studioSegment(gameId, assetKey, $state.snapshot(prompts)));
       candidate = { url: r.maskDataUrl, area: r.area };
+      candidateFrom = "proposal";
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
       segmenting = false;
     }
   }
+
+  // Leaving Cut (tab switch / asset switch) must not lose manual strokes either.
+  $effect(() => {
+    return () => {
+      if (candidate && candidateFrom === "manual" && selectedId) {
+        commands.studioSetMask(gameId, assetKey, selectedId, candidate.url, $state.snapshot(prompts));
+      }
+    };
+  });
 
   function resetPoints() {
     prompts = [];
@@ -373,16 +410,9 @@
     applying = true;
     error = "";
     try {
-      const updated = await unwrap(
-        commands.studioSetMask(gameId, assetKey, selectedId, url, $state.snapshot(prompts)),
-      );
-      Object.assign(doc, updated);
-      maskUrls = { ...maskUrls, [selectedId]: url };
+      await commitMaskTo(selectedId, url, prompts);
       candidate = null;
-      if (doc.parts.find((p) => p.id === selectedId)?.bbox) {
-        dirtySinceCut = new Set([...dirtySinceCut, selectedId]); // cut is now stale
-      }
-      refreshInpaint(); // mask changes flip inpaint freshness
+      candidateFrom = "";
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -490,6 +520,7 @@
     try {
       const r = await unwrap(commands.studioCloudCut(gameId, assetKey, selectedId));
       candidate = { url: r.maskDataUrl, area: r.area };
+      candidateFrom = "proposal";
       autoMsg = "Check the tint, then Apply selection.";
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -790,7 +821,10 @@
         {brushSize}
         {onpoint}
         onpointremove={onPointRemove}
-        onmaskedit={(url) => (candidate = { url })}
+        onmaskedit={(url) => {
+          candidate = { url };
+          candidateFrom = "manual";
+        }}
       />
       {#if segmenting}<span class="seg-badge mono">selecting…</span>{/if}
       {#if isolate && isolateUrl}
