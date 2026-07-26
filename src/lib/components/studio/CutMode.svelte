@@ -57,6 +57,8 @@
   let cutting = $state(false);
   let autoMsg = $state("");
   let autoRunning = $state(false);
+  // True while a snapshot from the last "AI select" is on disk — enables one-click revert.
+  let autoUndoAvailable = $state(false);
   // The planned animation lives on the doc (motionBrief): described BEFORE cutting so
   // the AI partitions for the motion, and reused later as the AI clip brief.
   let motionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -223,6 +225,9 @@
       }
       const first = doc.parts.find((p) => p.id !== "all") ?? doc.parts[0];
       if (first) selectPart(first.id);
+      autoUndoAvailable = await unwrap(
+        commands.studioAutocutUndoAvailable(gameId, assetKey),
+      ).catch(() => false);
       refreshInpaint();
       refreshCutThumbs();
     })();
@@ -498,12 +503,41 @@
         if (p.maskHash) loadMask(p.id);
       }
       autoMsg = "Check each part's tint, then Cut.";
+      autoUndoAvailable = true;
       dirtySinceCut = new Set();
       const first = doc.parts[0];
       if (first) selectPart(first.id);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       autoMsg = "";
+    } finally {
+      autoRunning = false;
+    }
+  }
+
+  // Revert to the parts snapshotted right before the last "AI select" — the safety net so
+  // a disappointing auto-cut never costs hand-selected masks.
+  async function undoAutoCut() {
+    autoRunning = true;
+    error = "";
+    try {
+      const updated = await unwrap(commands.studioUndoAutoCut(gameId, assetKey));
+      Object.assign(doc, updated);
+      doc.parts = [...doc.parts];
+      maskUrls = {};
+      for (const p of doc.parts) {
+        if (p.maskHash) loadMask(p.id);
+      }
+      cutThumbs = {};
+      await refreshCutThumbs();
+      autoUndoAvailable = false;
+      autoMsg = "Reverted to the parts from before the last AI select.";
+      dirtySinceCut = new Set();
+      const first = doc.parts.find((p) => p.id !== "all") ?? doc.parts[0];
+      if (first) selectPart(first.id);
+      oncut(updated); // keep Rig/Animate in sync with the restored doc
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
     } finally {
       autoRunning = false;
     }
@@ -647,6 +681,16 @@
           {cloudAllBusy
             ? "☁ Cutting all…"
             : `☁ ✦ Cloud cut all (${doc.parts.filter((p) => !maskUrls[p.id]).length})`}
+        </button>
+      {/if}
+      {#if autoUndoAvailable}
+        <button
+          class="ghost undo-auto"
+          disabled={autoRunning || cutting || inpainting}
+          onclick={undoAutoCut}
+          title="restore the parts you had before the last AI select"
+        >
+          ↩ Undo AI select
         </button>
       {/if}
     </div>
@@ -987,6 +1031,10 @@
     gap: 0.5rem;
   }
   .fx-open {
+    font-size: 0.72rem;
+    width: 100%;
+  }
+  .undo-auto {
     font-size: 0.72rem;
     width: 100%;
   }

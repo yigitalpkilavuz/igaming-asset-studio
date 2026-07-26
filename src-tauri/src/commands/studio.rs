@@ -284,6 +284,8 @@ pub async fn studio_auto_cut(
     let base = projects_root(&app)?;
     let mut doc = store::read_doc(&base, &game_id, &asset_key)?
         .ok_or_else(|| "no studio for this asset".to_string())?;
+    // Snapshot current parts + masks so a disappointing auto-cut is one-click reversible.
+    stash_autocut_undo(&base, &game_id, &asset_key, &doc)?;
     let source = image::open(store::source_path(&base, &game_id, &asset_key))
         .map_err(|e| format!("open source failed: {e}"))?
         .to_rgba8();
@@ -308,6 +310,9 @@ pub async fn studio_auto_cut(
             .map_err(|e| format!("encode original: {e}"))?;
         buf.into_inner()
     };
+    // Labeling is best-effort: on a network/LLM failure or an empty result, fall back to
+    // the discovered regions as parts, so auto-cut always returns an editable result
+    // instead of erroring (and wiping the snapshotted work).
     let labeled = regions::label(
         &api_key,
         &original_png,
@@ -316,10 +321,8 @@ pub async fn studio_auto_cut(
         &hint,
         &doc.motion_brief,
     )
-    .await?;
-    if labeled.len() < 2 {
-        return Err("the labeler proposed fewer than 2 parts — try manual selection".into());
-    }
+    .await
+    .unwrap_or_default();
 
     // 3. Build part masks (polished to click-path quality), replace parts, persist.
     tauri::async_runtime::spawn_blocking(move || {
@@ -332,19 +335,29 @@ pub async fn studio_auto_cut(
             rgb.put_pixel(x, y, image::Rgb([blend(p.0[0]), blend(p.0[1]), blend(p.0[2])]));
             alpha_img.put_pixel(x, y, image::Luma([p.0[3]]));
         }
-        // Union per part, then repair connectivity ACROSS parts (stray fragments move to
-        // the neighbour they touch), then polish each mask to click-path quality.
-        let mut raw_masks: Vec<(String, image::GrayImage)> = labeled
-            .iter()
-            .map(|lp| (lp.id.clone(), regions::part_mask(&regions, &lp.region_ids)))
-            .collect();
-        regions::repair_parts(&mut raw_masks);
+        // Resolve to (id, name, raw mask). Labeled path: union each part's regions, then
+        // repair connectivity ACROSS parts (stray fragments move to the neighbour they
+        // touch). Fallback path (labeler failed/empty): one part per discovered region.
+        let named: Vec<(String, String, image::GrayImage)> = if !labeled.is_empty() {
+            let mut raw_masks: Vec<(String, image::GrayImage)> = labeled
+                .iter()
+                .map(|lp| (lp.id.clone(), regions::part_mask(&regions, &lp.region_ids)))
+                .collect();
+            regions::repair_parts(&mut raw_masks);
+            raw_masks
+                .into_iter()
+                .enumerate()
+                .map(|(i, (id, m))| (id, labeled[i].name.clone(), m))
+                .collect()
+        } else {
+            regions
+                .iter()
+                .map(|r| (format!("part_{}", r.id), format!("Part {}", r.id), r.mask.clone()))
+                .collect()
+        };
 
         let mut parts = Vec::new();
-        for lp in &labeled {
-            let Some((_, raw)) = raw_masks.iter().find(|(id, _)| id == &lp.id) else {
-                continue;
-            };
+        for (id, name, raw) in &named {
             let mask = regions::polish_mask(raw, &rgb, &alpha_img);
             if segment::mask_bbox(&mask).is_none() {
                 continue;
@@ -352,15 +365,15 @@ pub async fn studio_auto_cut(
             let mut png = std::io::Cursor::new(Vec::new());
             image::DynamicImage::ImageLuma8(mask)
                 .write_to(&mut png, image::ImageFormat::Png)
-                .map_err(|e| format!("encode mask for {}: {e}", lp.id))?;
+                .map_err(|e| format!("encode mask for {id}: {e}"))?;
             let png = png.into_inner();
             store::write_file(
-                &store::part_dir(&base, &game_id, &asset_key, &lp.id).join("mask.png"),
+                &store::part_dir(&base, &game_id, &asset_key, id).join("mask.png"),
                 &png,
             )?;
             parts.push(crate::studio::doc::Part {
-                id: lp.id.clone(),
-                name: lp.name.clone(),
+                id: id.clone(),
+                name: name.clone(),
                 prompts: Vec::new(),
                 bbox: None,
                 mask_hash: Some(sha256_hex(&png)),
@@ -369,8 +382,8 @@ pub async fn studio_auto_cut(
                 texture: crate::studio::doc::PartTexture::Cut,
             });
         }
-        if parts.len() < 2 {
-            return Err("labeling produced fewer than 2 usable parts".into());
+        if parts.is_empty() {
+            return Err("auto-cut produced no usable parts — try manual selection".into());
         }
         doc.parts = parts;
         doc.updated_at = now_ms();
@@ -379,6 +392,76 @@ pub async fn studio_auto_cut(
     })
     .await
     .map_err(|e| format!("mask build failed: {e}"))?
+}
+
+/// Snapshot the current studio doc + every part mask into a one-slot undo cache, so a
+/// disappointing auto-cut can be reverted without losing hand-selected masks.
+fn stash_autocut_undo(
+    base: &std::path::Path,
+    game_id: &str,
+    asset_key: &str,
+    doc: &StudioDoc,
+) -> Result<(), String> {
+    let undo = store::studio_dir(base, game_id, asset_key).join("autocut_undo");
+    let _ = std::fs::remove_dir_all(&undo);
+    let doc_json = serde_json::to_string(doc).map_err(|e| format!("undo doc: {e}"))?;
+    store::write_file(&undo.join("studio.json"), doc_json.as_bytes())?;
+    for p in &doc.parts {
+        let src = store::part_dir(base, game_id, asset_key, &p.id).join("mask.png");
+        if src.is_file() {
+            let bytes = std::fs::read(&src).map_err(|e| format!("read mask {}: {e}", p.id))?;
+            store::write_file(&undo.join("parts").join(&p.id).join("mask.png"), &bytes)?;
+        }
+    }
+    Ok(())
+}
+
+/// Is there an auto-cut snapshot to undo for this asset?
+#[tauri::command]
+#[specta::specta]
+pub fn studio_autocut_undo_available(
+    app: tauri::AppHandle,
+    game_id: String,
+    asset_key: String,
+) -> Result<bool, String> {
+    let base = projects_root(&app)?;
+    Ok(store::studio_dir(&base, &game_id, &asset_key)
+        .join("autocut_undo")
+        .join("studio.json")
+        .is_file())
+}
+
+/// Restore the parts + masks snapshotted before the last auto-cut (one-slot undo).
+#[tauri::command]
+#[specta::specta]
+pub async fn studio_undo_auto_cut(
+    app: tauri::AppHandle,
+    game_id: String,
+    asset_key: String,
+) -> Result<StudioDoc, String> {
+    let base = projects_root(&app)?;
+    let undo = store::studio_dir(&base, &game_id, &asset_key).join("autocut_undo");
+    let doc_path = undo.join("studio.json");
+    if !doc_path.is_file() {
+        return Err("nothing to undo — no snapshot from a previous auto-cut".into());
+    }
+    let bytes = std::fs::read(&doc_path).map_err(|e| format!("read undo doc: {e}"))?;
+    let mut doc: StudioDoc =
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse undo doc: {e}"))?;
+    for p in &doc.parts {
+        let snap = undo.join("parts").join(&p.id).join("mask.png");
+        if snap.is_file() {
+            let mb = std::fs::read(&snap).map_err(|e| format!("read undo mask {}: {e}", p.id))?;
+            store::write_file(
+                &store::part_dir(&base, &game_id, &asset_key, &p.id).join("mask.png"),
+                &mb,
+            )?;
+        }
+    }
+    doc.updated_at = now_ms();
+    store::write_doc(&base, &game_id, &asset_key, &doc)?;
+    let _ = std::fs::remove_dir_all(&undo);
+    Ok(doc)
 }
 
 /// A candidate mask for one part, previewed in the UI before the user accepts it.

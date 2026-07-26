@@ -267,6 +267,10 @@ export const commands = {
 	 *  guessing). Replaces the doc's parts with the labeled plan and persists their masks.
 	 */
 	studioAutoCut: (gameId: string, assetKey: string, hint: string) => typedError<StudioDoc, string>(__TAURI_INVOKE("studio_auto_cut", { gameId, assetKey, hint })),
+	/**  Is there an auto-cut snapshot to undo for this asset? */
+	studioAutocutUndoAvailable: (gameId: string, assetKey: string) => typedError<boolean, string>(__TAURI_INVOKE("studio_autocut_undo_available", { gameId, assetKey })),
+	/**  Restore the parts + masks snapshotted before the last auto-cut (one-slot undo). */
+	studioUndoAutoCut: (gameId: string, assetKey: string) => typedError<StudioDoc, string>(__TAURI_INVOKE("studio_undo_auto_cut", { gameId, assetKey })),
 	/**
 	 *  Run SAM with the given click prompts against this asset's source and return the
 	 *  refined candidate mask. Pure preview — nothing is persisted.

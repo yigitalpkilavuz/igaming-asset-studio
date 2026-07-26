@@ -99,6 +99,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::studio::studio_sam_download,
         commands::studio::studio_propose_parts,
         commands::studio::studio_auto_cut,
+        commands::studio::studio_autocut_undo_available,
+        commands::studio::studio_undo_auto_cut,
         commands::studio::studio_segment,
         commands::studio::studio_cloud_cut,
         commands::studio::studio_set_mask,
