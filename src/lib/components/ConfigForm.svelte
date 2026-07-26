@@ -29,6 +29,18 @@
     canvas: 0,
   };
   const sizing = config.symbolSizing;
+  // Symbol tonal bands — backfill for configs that predate the tone pass.
+  config.symbolTone ??= {
+    high: { min: 0.38, max: 0.42 },
+    low: { min: 0.28, max: 0.32 },
+    wild: { min: 0.38, max: 0.42 },
+    scatter: { min: 0.38, max: 0.42 },
+    alphaFloor: 200,
+    ceiling: 0.92,
+    gammaLo: 0.55,
+    gammaHi: 1.6,
+  };
+  const tone = config.symbolTone;
 
   // Scene-asset system — backfill for configs that predate it.
   config.scene ??= {
@@ -210,10 +222,14 @@
       <span class="muted tiny"></span>
       <span class="muted tiny">ink %</span>
       <span class="muted tiny">height %</span>
-      {#each [{ name: "low", cls: sizing.low }, { name: "high", cls: sizing.high }, { name: "wild", cls: sizing.wild }, { name: "scatter", cls: sizing.scatter }] as e (e.name)}
+      <span class="muted tiny">tone lo %</span>
+      <span class="muted tiny">tone hi %</span>
+      {#each [{ name: "low", cls: sizing.low, tone: tone.low }, { name: "high", cls: sizing.high, tone: tone.high }, { name: "wild", cls: sizing.wild, tone: tone.wild }, { name: "scatter", cls: sizing.scatter, tone: tone.scatter }] as e (e.name)}
         <span class="fit-name">{e.name}</span>
         <input type="number" min="5" max="80" value={pct(e.cls?.ink, 30)} oninput={(ev) => e.cls && (e.cls.ink = +ev.currentTarget.value / 100)} />
         <input type="number" min="20" max="100" value={pct(e.cls?.height, 75)} oninput={(ev) => e.cls && (e.cls.height = +ev.currentTarget.value / 100)} />
+        <input type="number" min="5" max="95" value={pct(e.tone?.min, 30)} oninput={(ev) => e.tone && (e.tone.min = +ev.currentTarget.value / 100)} title="tonal band floor — median HSV value %" />
+        <input type="number" min="5" max="95" value={pct(e.tone?.max, 40)} oninput={(ev) => e.tone && (e.tone.max = +ev.currentTarget.value / 100)} title="tonal band ceiling — median HSV value %" />
       {/each}
     </div>
     <div class="field-row">
@@ -233,8 +249,9 @@
     <p class="muted note-line">
       The eye reads INK (covered pixels), not height — a hat and a hand at equal height
       differ ~3× in ink. Process blends height- and ink-based scales, clamps to the safe
-      box, and flags UNDER/OVERWEIGHT symbols in Quality. Advanced knobs (centroidBias,
-      alphaFloor, canvas) live in the porter JSON.
+      box, and flags UNDER/OVERWEIGHT symbols in Quality. Tone lo/hi = the value-budget band Process
+      gamma-corrects each symbol into. Advanced knobs (centroidBias, alphaFloor, canvas,
+      gamma clamp) live in the porter JSON.
     </p>
   </fieldset>
 
@@ -279,6 +296,26 @@
               <label class="cut-chk" title="the element has interior see-through openings (window glass, arch gaps) — generated as flat chroma fills and keyed to real transparency">
                 <input type="checkbox" bind:checked={sa.cutouts} />
                 <span class="tiny">cut-outs</span>
+              </label>
+              <label class="tone-band" title="value-budget band this layer owns (median HSV value, % of full scale) — Process bakes a gamma correction; empty = no tone pass">
+                <span class="tiny">tone</span>
+                <input
+                  type="number" min="1" max="95" placeholder="—"
+                  value={sa.tonalTarget ? Math.round((sa.tonalTarget.min ?? 0) * 100) : ""}
+                  oninput={(e) => {
+                    const v = +e.currentTarget.value;
+                    if (!v) { sa.tonalTarget = null; return; }
+                    sa.tonalTarget = { min: v / 100, max: sa.tonalTarget?.max ?? v / 100 };
+                  }}
+                />–<input
+                  type="number" min="1" max="95" placeholder="—"
+                  value={sa.tonalTarget ? Math.round((sa.tonalTarget.max ?? 0) * 100) : ""}
+                  oninput={(e) => {
+                    const v = +e.currentTarget.value;
+                    if (!v) return;
+                    sa.tonalTarget = { min: sa.tonalTarget?.min ?? v / 100, max: v / 100 };
+                  }}
+                />
               </label>
               <button type="button" class="rm" title="Remove" onclick={() => removeSceneAsset(ai)}>×</button>
             </div>
@@ -475,9 +512,22 @@
   .rm {
     grid-area: rm;
   }
+  .tone-band {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+    font-size: 0.7rem;
+    color: var(--bone-dim);
+    white-space: nowrap;
+  }
+  .tone-band input {
+    width: 3.2rem;
+    padding: 0.25rem 0.3rem;
+    font-size: 0.72rem;
+  }
   .fit-grid {
     display: grid;
-    grid-template-columns: 5rem 5rem 5rem;
+    grid-template-columns: 5rem 4.4rem 4.4rem 4.4rem 4.4rem;
     gap: 0.35rem 0.5rem;
     align-items: center;
   }

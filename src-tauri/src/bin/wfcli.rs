@@ -205,8 +205,14 @@ fn main() {
             ok(&report);
         }
         "export" => {
-            let game = pos.first().unwrap_or_else(|| die("usage: wfcli export <game>"));
-            let report = export::build_dist(&base, game).unwrap_or_else(|e| die(&e));
+            let game = pos.first().unwrap_or_else(|| die("usage: wfcli export <game> [--force]"));
+            let force = args.iter().any(|a| a == "--force");
+            let report = export::build_dist_gated(&base, game, force).unwrap_or_else(|e| die(&e));
+            ok(&report);
+        }
+        "tonegate" => {
+            let game = pos.first().unwrap_or_else(|| die("usage: wfcli tonegate <game>"));
+            let report = export::tone_gate(&base, game, None).unwrap_or_else(|e| die(&e));
             ok(&report);
         }
         _ => {
@@ -214,7 +220,7 @@ fn main() {
                 "wfcli — headless Wishfell Asset Pipeline\n\
                  commands: games | assets <game> | show <game> <asset> | image <game> <asset> [take]\n\
                  | providers | generate <game> <asset> [--provider id] [--count n] [--ref key]... [--guide key]\n\
-                 | process <game> <asset> [take] | quality <game> <asset> [take] | export <game>"
+                 | process <game> <asset> [take] | quality <game> <asset> [take] | export <game> [--force] | tonegate <game>"
             );
             std::process::exit(if cmd == "help" { 0 } else { 1 });
         }

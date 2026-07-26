@@ -215,6 +215,7 @@ mod tests {
             has_mascot: false,
             mascot_description: String::new(),
             symbol_sizing: Default::default(),
+            symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
         }

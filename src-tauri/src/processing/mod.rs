@@ -7,6 +7,7 @@
 pub mod chromakey;
 pub mod convert;
 pub mod normalize;
+pub mod tone;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -90,17 +91,27 @@ pub fn run_pipeline(
     nine_slice: Option<Insets>,
     // Normalize the subject's VISUAL MASS to the tier's target (symbols only).
     mass: Option<normalize::MassSpec>,
+    // Tone-normalise the asset into its value-budget band (assets with a band).
+    tone_spec: Option<tone::ToneSpec>,
     // WebP encode quality (10–100); the studio default is 85.
     webp_quality: f32,
     // Interior cut-outs: key chroma fills ANYWHERE in the image (not only a chroma
     // background) — scene elements with see-through openings.
     chroma_sweep: bool,
     pre: &Preflight,
-) -> Result<(Vec<StageOutput>, Option<crate::model::asset_record::MassReport>), String> {
+) -> Result<
+    (
+        Vec<StageOutput>,
+        Option<crate::model::asset_record::MassReport>,
+        Option<crate::model::asset_record::ToneReport>,
+    ),
+    String,
+> {
     fs::create_dir_all(stages_dir).map_err(|e| format!("create stages dir failed: {e}"))?;
 
     let mut stages: Vec<StageOutput> = Vec::new();
     let mut mass_report = None;
+    let mut tone_report = None;
     let mut cur: PathBuf = raw_path.to_path_buf();
 
     // (Upscale is now a deliberate, separate step — see the "Upscale" command — so Process
@@ -151,6 +162,22 @@ pub fn run_pipeline(
         cur = out;
     }
 
+    // 1c. Tone pass: the value budget's enforcement — solve a gamma to the asset's
+    //     declared band (median HSV value over opaque pixels) and bake it. Runs after
+    //     keying (fringe must not drag the median) and before the fit pass + lossy
+    //     encode. In-band assets pass through untouched.
+    if let Some(spec) = tone_spec {
+        let bytes = fs::read(&cur).map_err(|e| format!("read for tone failed: {e}"))?;
+        let (corrected, report) = tone::tone_pass(&bytes, spec)?;
+        tone_report = Some(report);
+        if let Some(corrected) = corrected {
+            let out = stages_dir.join("tone.png");
+            fs::write(&out, &corrected).map_err(|e| format!("write tone failed: {e}"))?;
+            stages.push(stage("tone", "tone.png"));
+            cur = out;
+        }
+    }
+
     // 2. Symbol fit pass: blend height- and ink-based scales (the eye reads ink, not
     //    height), anchor centroid-biased, clamp to the safe box — every symbol in a
     //    class carries comparable visual weight and nothing overflows its cell.
@@ -194,7 +221,7 @@ pub fn run_pipeline(
         stages.push(stage("nineSlice", "final.9.json"));
     }
 
-    Ok((stages, mass_report))
+    Ok((stages, mass_report, tone_report))
 }
 
 fn stage(name: &str, filename: &str) -> StageOutput {

@@ -219,7 +219,7 @@ export const commands = {
 	 *  Build the dist tree + manifest snippet for a game (ASSETS.md §16/§17). Rebuilds from
 	 *  scratch and reports which assets were written vs. still missing a processed variation.
 	 */
-	exportDist: (gameId: string) => typedError<ExportReport, string>(__TAURI_INVOKE("export_dist", { gameId })),
+	exportDist: (gameId: string, force: boolean) => typedError<ExportReport, string>(__TAURI_INVOKE("export_dist", { gameId, force })),
 	/**
 	 *  Copy READY assets' processed finals into `dest_dir`: `<asset_key>.webp` plus its
 	 *  secondary twin — `.png` for alpha assets, `.jpg` for opaque ones (backgrounds,
@@ -227,7 +227,7 @@ export const commands = {
 	 *  of the same name are overwritten. When `keys` is non-empty only those assets are
 	 *  considered (else every asset). Remembers `dest_dir` for one-click re-publish.
 	 */
-	publishFinals: (gameId: string, destDir: string, keys: string[]) => typedError<PublishReport, string>(__TAURI_INVOKE("publish_finals", { gameId, destDir, keys })),
+	publishFinals: (gameId: string, destDir: string, keys: string[], force: boolean) => typedError<PublishReport, string>(__TAURI_INVOKE("publish_finals", { gameId, destDir, keys, force })),
 	/**
 	 *  Open (or create) the studio for an asset. On first open the active processed variation
 	 *  is snapshotted to `studio/source.png` and a degenerate single-part doc with a canned
@@ -667,6 +667,10 @@ export type ExportReport = {
 	waived: string[],
 	/**  The `assets.ts` manifest fragment (§17). */
 	manifestSnippet: string,
+	/**  Value-budget gate outcome (None only for legacy callers). */
+	tone?: ValueReport | null,
+	/**  True when the gate refused and nothing was written (re-run with force to override). */
+	blocked?: boolean,
 };
 
 export type FillStatus = {
@@ -739,6 +743,11 @@ export type GameConfig = {
 	mascotDescription?: string,
 	/**  Visual-mass sizing targets for symbols (Process normalizes to these). */
 	symbolSizing?: SymbolSizing,
+	/**
+	 *  Symbol tonal bands (the value budget's brightest tier). Serde-defaulted so
+	 *  existing configs pick up studio defaults.
+	 */
+	symbolTone?: SymbolTone,
 	/**  Default provider id for SYMBOL generation ("" = whatever the bench has selected). */
 	symbolProvider?: string,
 	/**  Scene-asset system: plates / layers / set-piece sprites with composition guides. */
@@ -1072,6 +1081,10 @@ export type ProviderInfo = {
 /**  Result of a publish run. */
 export type PublishReport = {
 	dest: string,
+	/**  Value-budget gate outcome for the published set. */
+	tone?: ValueReport | null,
+	/**  True when the gate refused and nothing was copied (re-run with force). */
+	blocked?: boolean,
 	/**  Asset keys whose `<key>.webp` + secondary twin were copied. */
 	copied: string[],
 	skipped: PublishSkip[],
@@ -1139,6 +1152,8 @@ export type SceneAssetDef = {
 	 *  band): adds the tileable prompt clause + the seam check in the bench.
 	 */
 	wrap?: boolean,
+	/**  Tonal band this layer owns in the value budget (None = no tone correction). */
+	tonalTarget?: ToneBand | null,
 	/**  Runtime placement for the scene manifest (None → asset omitted from scene.json). */
 	placement?: ScenePlacement | null,
 	variants?: SceneVariantDef[],
@@ -1153,6 +1168,11 @@ export type SceneConfig = {
 	defaultProvider?: string,
 	/**  WebP quality for scene exports (10–100). */
 	webpQuality?: number,
+	/**
+	 *  Cross-asset ordering the export/publish gate asserts on shipped medians:
+	 *  each entry means median(darker) < median(brighter). Full derived asset keys.
+	 */
+	toneOrdering?: ToneOrderRule[],
 };
 
 /**  Scene-asset sub-types. Symbols are square grid cutouts; scene art is not. */
@@ -1360,6 +1380,11 @@ export type SymbolDef = {
 	 *  The hard extent clamp still applies.
 	 */
 	sizeNudge?: number | null,
+	/**
+	 *  Art-director override: a target median for THIS symbol instead of its class
+	 *  band (None = class band).
+	 */
+	toneTarget?: number | null,
 };
 
 /**
@@ -1407,6 +1432,27 @@ export type SymbolSizing = {
 	canvas?: number,
 };
 
+/**
+ *  Symbol tone rule — the colour twin of `SymbolSizing`. The art is UNLIT, so layers
+ *  separate by tonal value alone; symbols must be the brightest thing on screen.
+ */
+export type SymbolTone = {
+	high: ToneBand,
+	low: ToneBand,
+	wild: ToneBand,
+	scatter: ToneBand,
+	/**  Only pixels with alpha above this are measured (fringe must not drag the median). */
+	alphaFloor?: number,
+	/**  No output channel may exceed this — headroom reserved for the runtime flash. */
+	ceiling?: number | null,
+	/**
+	 *  Gamma clamp [lo, hi]: needing more correction than this = generation failure
+	 *  (flagged NEEDS_REGEN, never forced).
+	 */
+	gammaLo?: number | null,
+	gammaHi?: number | null,
+};
+
 export type Timeline = {
 	target: TimelineTarget,
 	/**  Sorted by time ascending. */
@@ -1423,6 +1469,53 @@ export type TimelineTarget =
 /**  Absolute alpha 0..1 on a slot. */
 ({ slotAlpha: string }) & { boneRotate?: never; boneScale?: never; boneTranslate?: never };
 
+/**
+ *  A tonal band: where an asset's median HSV value (median of max(r,g,b) over
+ *  opaque pixels) must land. The tone pass corrects out-of-band assets to the
+ *  NEAREST band edge with a solved gamma curve; in-band assets are untouched.
+ */
+export type ToneBand = {
+	min: number | null,
+	max: number | null,
+};
+
+/**  One asset's row in the value-budget gate report. */
+export type ToneGateRow = {
+	key: string,
+	median: number | null,
+	bandMin: number | null,
+	bandMax: number | null,
+	/**  "in_band" | "corrected" | "needs_regen" | "unmeasured" */
+	flag: string,
+};
+
+/**
+ *  One gate assertion: the `darker` asset's shipped median must stay below the
+ *  `brighter` asset's (e.g. back wall < storm sky, or the window reads as a hole).
+ */
+export type ToneOrderRule = {
+	darker: string,
+	brighter: string,
+};
+
+/**
+ *  Outcome of the TONE pass (value-budget enforcement). `flag`:
+ *  "in_band" (untouched) | "corrected" | "needs_regen" (clamped — regenerate) |
+ *  "no_opaque_pixels". Gamma-solved correction to the nearest band edge; hue and
+ *  alpha untouched; ceiling reserves headroom for the runtime flash.
+ */
+export type ToneReport = {
+	medianBefore: number | null,
+	medianAfter: number | null,
+	bandMin: number | null,
+	bandMax: number | null,
+	gammaRequired: number | null,
+	gammaApplied: number | null,
+	clamped: boolean,
+	ceilingHit: boolean,
+	flag: string,
+};
+
 /**  Where a glyph sits on the base. */
 export type Transform = {
 	/**  Glyph centre as a fraction of the base width (0.5 = centred). */
@@ -1433,6 +1526,17 @@ export type Transform = {
 	scale: number | null,
 	/**  Degrees, clockwise. */
 	rotation: number | null,
+};
+
+/**
+ *  The value-budget gate: per-asset band conformance + cross-asset ordering.
+ *  `ok == false` blocks export/publish unless the user forces.
+ */
+export type ValueReport = {
+	ok: boolean,
+	rows: ToneGateRow[],
+	/**  Human-readable violations, most severe first. */
+	violations: string[],
 };
 
 /**  A single generated image variation and its full lineage (M3 fills this in). */
@@ -1457,6 +1561,8 @@ export type Variation = {
 	stages?: StageOutput[],
 	/**  Visual-mass sizing outcome from the last Process run (symbols only). */
 	massReport?: MassReport | null,
+	/**  Tone-pass outcome from the last Process run (assets with a tonal band). */
+	toneReport?: ToneReport | null,
 	/**  Locked/favourited — protected from history pruning (`delete_variation` refuses it). */
 	locked?: boolean,
 };

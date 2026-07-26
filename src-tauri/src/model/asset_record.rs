@@ -57,6 +57,9 @@ pub struct Variation {
     /// Visual-mass sizing outcome from the last Process run (symbols only).
     #[serde(default)]
     pub mass_report: Option<MassReport>,
+    /// Tone-pass outcome from the last Process run (assets with a tonal band).
+    #[serde(default)]
+    pub tone_report: Option<ToneReport>,
     /// Locked/favourited — protected from history pruning (`delete_variation` refuses it).
     #[serde(default)]
     pub locked: bool,
@@ -101,6 +104,24 @@ pub struct MassReport {
     /// scale_final > 1.15 — the source lacks resolution, regenerate larger.
     #[serde(default)]
     pub upscaled: bool,
+}
+
+/// Outcome of the TONE pass (value-budget enforcement). `flag`:
+/// "in_band" (untouched) | "corrected" | "needs_regen" (clamped — regenerate) |
+/// "no_opaque_pixels". Gamma-solved correction to the nearest band edge; hue and
+/// alpha untouched; ceiling reserves headroom for the runtime flash.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ToneReport {
+    pub median_before: f64,
+    pub median_after: f64,
+    pub band_min: f64,
+    pub band_max: f64,
+    pub gamma_required: f64,
+    pub gamma_applied: f64,
+    pub clamped: bool,
+    pub ceiling_hit: bool,
+    pub flag: String,
 }
 
 /// Per-asset working record: the prompt plus every generated variation. Canonical copy

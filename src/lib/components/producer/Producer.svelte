@@ -25,6 +25,7 @@
   import StyleAnchor from "./StyleAnchor.svelte";
   import ContactSheetModal from "./ContactSheetModal.svelte";
   import SetComposer from "./SetComposer.svelte";
+  import ConfirmDialog from "../ConfirmDialog.svelte";
 
   let { gameId, assetKey }: { gameId: string | null; assetKey: string | null } = $props();
 
@@ -355,12 +356,36 @@
     error = "";
     batchMsg = "";
     try {
-      const rep = await unwrap(commands.publishFinals(savedId, dir, keys));
+      let rep = await unwrap(commands.publishFinals(savedId, dir, keys, false));
+      if (rep.blocked) {
+        // The value-budget gate refused — surface the violations, offer force.
+        publishGate = { dir, keys, violations: rep.tone?.violations ?? [] };
+        return;
+      }
       publishDir = rep.dest;
       const scope = keys.length ? "selected " : "";
       batchMsg =
         `Published ${rep.copied.length} ${scope}asset${rep.copied.length === 1 ? "" : "s"} → ${rep.dest}` +
         (rep.skipped.length && !keys.length ? ` · ${rep.skipped.length} not ready` : "");
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      publishing = false;
+    }
+  }
+
+  // Pending publish blocked by the value-budget gate (ConfirmDialog offers force).
+  let publishGate = $state<{ dir: string; keys: string[]; violations: string[] } | null>(null);
+
+  async function forcePublish() {
+    const g = publishGate;
+    publishGate = null;
+    if (!g || !savedId) return;
+    publishing = true;
+    try {
+      const rep = await unwrap(commands.publishFinals(savedId, g.dir, g.keys, true));
+      publishDir = rep.dest;
+      batchMsg = `Published ${rep.copied.length} asset${rep.copied.length === 1 ? "" : "s"} → ${rep.dest} · WITH ${g.violations.length} value-budget violation${g.violations.length === 1 ? "" : "s"}`;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -630,6 +655,17 @@
       : (providersList.find((p) => p.configured)?.id ?? "")}
     onclose={() => (setKeys = null)}
     oncommitted={setCommitted}
+  />
+{/if}
+
+{#if publishGate}
+  <ConfirmDialog
+    title="Value budget gate"
+    message={`The publish set has ${publishGate.violations.length} tonal violation${publishGate.violations.length === 1 ? "" : "s"}:\n\n${publishGate.violations.join("\n")}\n\nRegenerate the offenders, or publish anyway.`}
+    confirmLabel="Publish anyway"
+    busy={publishing}
+    onconfirm={forcePublish}
+    oncancel={() => (publishGate = null)}
   />
 {/if}
 </div>

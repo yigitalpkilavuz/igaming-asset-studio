@@ -40,6 +40,7 @@ const CONFIG_JSON_SPEC: &str = "\
   \"hasMystery\": boolean, \"holdAndSpin\": boolean,\n\
   \"hasMascot\": boolean (an on-screen mascot character beside the reels, like Zeus in Gates of Olympus), \"mascotDescription\": string (who the mascot is — one-sentence art direction),\n\
   \"symbolSizing\": OPTIONAL symbol fit rule { \"low\"/\"high\"/\"wild\"/\"scatter\": { \"ink\": 0-1 cell-area fraction, \"height\": 0-1 cell-height fraction, \"tolerance\": number }, \"areaWeight\": 0-1 (0=height fit, 1=pure ink), \"centroidBias\": 0-1, \"alphaFloor\": 0-255, \"safeW\": 0-1, \"safeH\": 0-1, \"canvas\": px (0 = keep source) },\n\
+ \"symbolTone\": OPTIONAL value-budget bands { \"low\"/\"high\"/\"wild\"/\"scatter\": { \"min\": 0-1, \"max\": 0-1 } (median HSV value band; Process gamma-corrects into it), \"alphaFloor\": 0-255, \"ceiling\": 0-1, \"gammaLo\"/\"gammaHi\": clamp },\n\
   \"scene\": OPTIONAL scene-asset system { \"presets\": [{ \"key\", \"width\", \"height\" }], \"guides\": [{ \"key\", \"preset\", \"zones\": [{ \"label\", \"x\", \"y\", \"w\", \"h\" (percent 0-100) }] }], \"assets\": [{ \"key\", \"kind\": \"plate\"|\"layer\"|\"sprite\"|\"fx\"|\"particle\", \"cutouts\": boolean (interior see-through openings, keyed to transparency), \"name\", \"description\" (shared prompt core), \"provider\" (optional), \"wrap\": boolean (tiles horizontally, adds seam check), \"placement\": { \"fit\": \"cover\"|\"anchored\", \"anchor\": [x,y 0-1 in texture], \"pos\": [x,y 0-1 of canvas], \"height\": fraction, \"parallax\": 0-1 depth multiplier, \"overscan\": fraction, \"blend\": \"add\"|\"screen\", \"fps\": number, \"loop\": boolean } (runtime scene.json entry; omit to keep the asset out of the manifest), \"variants\": [{ \"key\" (portrait/tablet emit as manifest overrides), \"preset\", \"extraPrompt\", \"placement\" (overrides) }] }], \"defaultProvider\": string, \"webpQuality\": number } — plates replace the stock backgrounds,\n\
   \"stylePrompt\": string (a rich, hand-authored aesthetic master — medium, linework, palette, lighting, and what to AVOID; this is the anti-slop art direction),\n\
   \"negativePrompt\": string (anti-slop negatives),\n\
@@ -79,6 +80,7 @@ pub struct ConfigDraft {
     mascot_description: Option<String>,
     scene: Option<crate::model::game_config::SceneConfig>,
     symbol_sizing: Option<crate::model::game_config::SymbolSizing>,
+    symbol_tone: Option<crate::model::game_config::SymbolTone>,
     style_prompt: Option<String>,
     negative_prompt: Option<String>,
     brief: Option<String>,
@@ -554,6 +556,7 @@ pub fn apply_draft(current: &GameConfig, d: ConfigDraft) -> GameConfig {
                     description: s.description.unwrap_or_default(),
                     animation: s.animation.unwrap_or_default(),
                     size_nudge: 1.0,
+            tone_target: None,
                 })
             })
             .collect();
@@ -604,6 +607,9 @@ pub fn apply_draft(current: &GameConfig, d: ConfigDraft) -> GameConfig {
     }
     if let Some(v) = d.symbol_sizing {
         c.symbol_sizing = v;
+    }
+    if let Some(v) = d.symbol_tone {
+        c.symbol_tone = v;
     }
     if let Some(v) = d.style_prompt {
         if !v.trim().is_empty() {
@@ -696,6 +702,7 @@ mod tests {
             has_mascot: false,
             mascot_description: String::new(),
             symbol_sizing: Default::default(),
+            symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
         }
@@ -741,6 +748,7 @@ mod tests {
             description: "a crowned skull".into(),
             animation: "the crown glints once".into(),
             size_nudge: 1.0,
+            tone_target: None,
         });
         let prompt = portable_draft_prompt(&cfg);
 

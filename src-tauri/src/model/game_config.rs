@@ -51,6 +51,10 @@ pub struct SymbolDef {
     /// The hard extent clamp still applies.
     #[serde(default = "default_nudge")]
     pub size_nudge: f64,
+    /// Art-director override: a target median for THIS symbol instead of its class
+    /// band (None = class band).
+    #[serde(default)]
+    pub tone_target: Option<f64>,
 }
 
 fn default_nudge() -> f64 {
@@ -164,6 +168,70 @@ impl SymbolSizing {
     }
 }
 
+/// A tonal band: where an asset's median HSV value (median of max(r,g,b) over
+/// opaque pixels) must land. The tone pass corrects out-of-band assets to the
+/// NEAREST band edge with a solved gamma curve; in-band assets are untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ToneBand {
+    pub min: f64,
+    pub max: f64,
+}
+
+/// Symbol tone rule — the colour twin of `SymbolSizing`. The art is UNLIT, so layers
+/// separate by tonal value alone; symbols must be the brightest thing on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SymbolTone {
+    pub high: ToneBand,
+    pub low: ToneBand,
+    pub wild: ToneBand,
+    pub scatter: ToneBand,
+    /// Only pixels with alpha above this are measured (fringe must not drag the median).
+    #[serde(default = "d_tone_alpha_floor")]
+    pub alpha_floor: u8,
+    /// No output channel may exceed this — headroom reserved for the runtime flash.
+    #[serde(default = "d_tone_ceiling")]
+    pub ceiling: f64,
+    /// Gamma clamp [lo, hi]: needing more correction than this = generation failure
+    /// (flagged NEEDS_REGEN, never forced).
+    #[serde(default = "d_tone_gamma_lo")]
+    pub gamma_lo: f64,
+    #[serde(default = "d_tone_gamma_hi")]
+    pub gamma_hi: f64,
+}
+
+fn d_tone_alpha_floor() -> u8 { 200 }
+fn d_tone_ceiling() -> f64 { 0.92 }
+fn d_tone_gamma_lo() -> f64 { 0.55 }
+fn d_tone_gamma_hi() -> f64 { 1.60 }
+
+impl Default for SymbolTone {
+    fn default() -> Self {
+        Self {
+            high: ToneBand { min: 0.38, max: 0.42 },
+            low: ToneBand { min: 0.28, max: 0.32 },
+            wild: ToneBand { min: 0.38, max: 0.42 },
+            scatter: ToneBand { min: 0.38, max: 0.42 },
+            alpha_floor: d_tone_alpha_floor(),
+            ceiling: d_tone_ceiling(),
+            gamma_lo: d_tone_gamma_lo(),
+            gamma_hi: d_tone_gamma_hi(),
+        }
+    }
+}
+
+impl SymbolTone {
+    pub fn class_for(&self, role: SymbolRole) -> ToneBand {
+        match role {
+            SymbolRole::Low => self.low,
+            SymbolRole::High | SymbolRole::Special => self.high,
+            SymbolRole::Wild | SymbolRole::ExpandingWild => self.wild,
+            SymbolRole::Scatter | SymbolRole::Bonus => self.scatter,
+        }
+    }
+}
+
 /// One buy-bonus mode. Two or more of these unlock the buy-bonus selector screen
 /// (ASSETS.md §9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -232,6 +300,10 @@ pub struct GameConfig {
     /// Visual-mass sizing targets for symbols (Process normalizes to these).
     #[serde(default)]
     pub symbol_sizing: SymbolSizing,
+    /// Symbol tonal bands (the value budget's brightest tier). Serde-defaulted so
+    /// existing configs pick up studio defaults.
+    #[serde(default)]
+    pub symbol_tone: SymbolTone,
 
     /// Default provider id for SYMBOL generation ("" = whatever the bench has selected).
     #[serde(default)]
@@ -389,6 +461,9 @@ pub struct SceneAssetDef {
     /// band): adds the tileable prompt clause + the seam check in the bench.
     #[serde(default)]
     pub wrap: bool,
+    /// Tonal band this layer owns in the value budget (None = no tone correction).
+    #[serde(default)]
+    pub tonal_target: Option<ToneBand>,
     /// Runtime placement for the scene manifest (None → asset omitted from scene.json).
     #[serde(default)]
     pub placement: Option<ScenePlacement>,
@@ -412,6 +487,10 @@ pub struct SceneConfig {
     /// WebP quality for scene exports (10–100).
     #[serde(default = "d_webp_quality")]
     pub webp_quality: u32,
+    /// Cross-asset ordering the export/publish gate asserts on shipped medians:
+    /// each entry means median(darker) < median(brighter). Full derived asset keys.
+    #[serde(default)]
+    pub tone_ordering: Vec<ToneOrderRule>,
 }
 
 fn default_scene_presets() -> Vec<ScenePreset> {
@@ -424,6 +503,15 @@ fn d_webp_quality() -> u32 {
     90
 }
 
+/// One gate assertion: the `darker` asset's shipped median must stay below the
+/// `brighter` asset's (e.g. back wall < storm sky, or the window reads as a hole).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ToneOrderRule {
+    pub darker: String,
+    pub brighter: String,
+}
+
 impl Default for SceneConfig {
     fn default() -> Self {
         Self {
@@ -432,6 +520,7 @@ impl Default for SceneConfig {
             assets: Vec::new(),
             default_provider: String::new(),
             webp_quality: d_webp_quality(),
+            tone_ordering: Vec::new(),
         }
     }
 }

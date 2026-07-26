@@ -197,6 +197,7 @@ mod tests {
                 description: "an armored knight with a spiral snail shell, lance and shield".into(),
                 animation: String::new(),
             size_nudge: 1.0,
+            tone_target: None,
         }],
             has_feature_background: true,
             has_buy_bonus: false,
@@ -208,6 +209,7 @@ mod tests {
             has_mascot: false,
             mascot_description: String::new(),
             symbol_sizing: Default::default(),
+            symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
         }
@@ -332,6 +334,7 @@ mod tests {
             name: "Copper Coin".into(),
             description: "a worn copper coin".into(), animation: String::new(),
             size_nudge: 1.0,
+            tone_target: None,
         });
         // High tier reads big (~85%); low tier reads smaller (~60%).
         let high = assemble(&cfg, &descriptor_for("symbol_h1"), &PromptState::default());
@@ -387,6 +390,7 @@ mod tests {
             name: "Anomaly".into(),
             description: "a glitching heraldic beast".into(), animation: String::new(),
             size_nudge: 1.0,
+            tone_target: None,
         });
         let a = assemble(&cfg, &descriptor_for("symbol_wild"), &PromptState::default());
         assert!(a.positive.contains("special feature symbol"));
@@ -405,6 +409,7 @@ mod tests {
             name: "Reliquary".into(),
             description: "a radiant reliquary".into(), animation: String::new(),
             size_nudge: 1.0,
+            tone_target: None,
         });
         let scatter = assemble(&cfg, &descriptor_for("symbol_scat"), &PromptState::default());
         assert!(!scatter.positive.contains("\"SCATTER\""), "word stays out of the art");

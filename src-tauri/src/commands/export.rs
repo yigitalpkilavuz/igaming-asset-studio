@@ -11,9 +11,13 @@ use crate::storage;
 /// scratch and reports which assets were written vs. still missing a processed variation.
 #[tauri::command]
 #[specta::specta]
-pub fn export_dist(app: tauri::AppHandle, game_id: String) -> Result<ExportReport, String> {
+pub fn export_dist(
+    app: tauri::AppHandle,
+    game_id: String,
+    force: bool,
+) -> Result<ExportReport, String> {
     let base = projects_root(&app)?;
-    export::build_dist(&base, &game_id)
+    export::build_dist_gated(&base, &game_id, force)
 }
 
 /// One asset that couldn't be published, with why.
@@ -29,6 +33,12 @@ pub struct PublishSkip {
 #[serde(rename_all = "camelCase")]
 pub struct PublishReport {
     pub dest: String,
+    /// Value-budget gate outcome for the published set.
+    #[serde(default)]
+    pub tone: Option<export::ValueReport>,
+    /// True when the gate refused and nothing was copied (re-run with force).
+    #[serde(default)]
+    pub blocked: bool,
     /// Asset keys whose `<key>.webp` + secondary twin were copied.
     pub copied: Vec<String>,
     pub skipped: Vec<PublishSkip>,
@@ -46,8 +56,20 @@ pub fn publish_finals(
     game_id: String,
     dest_dir: String,
     keys: Vec<String>,
+    force: bool,
 ) -> Result<PublishReport, String> {
     let base = projects_root(&app)?;
+    // Publish runs the SAME value-budget gate as export — both exits, one verdict.
+    let tone = export::tone_gate(&base, &game_id, (!keys.is_empty()).then_some(&keys[..]))?;
+    if !tone.ok && !force {
+        return Ok(PublishReport {
+            dest: dest_dir,
+            tone: Some(tone),
+            blocked: true,
+            copied: Vec::new(),
+            skipped: Vec::new(),
+        });
+    }
     std::fs::create_dir_all(&dest_dir).map_err(|e| format!("create dest folder failed: {e}"))?;
     let dest = std::path::Path::new(&dest_dir);
 
@@ -105,5 +127,5 @@ pub fn publish_finals(
         let _ = storage::write_project(&base, &project);
     }
 
-    Ok(PublishReport { dest: dest_dir, copied, skipped })
+    Ok(PublishReport { dest: dest_dir, tone: Some(tone), blocked: false, copied, skipped })
 }

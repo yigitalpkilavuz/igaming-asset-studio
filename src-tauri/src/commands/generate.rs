@@ -165,6 +165,7 @@ texture may pass beneath them. Do NOT copy the guide's style or draw its rectang
             background: out.background,
             stages: Vec::new(),
             mass_report: None,
+            tone_report: None,
             locked: false,
         });
         record.active_variation = Some(var_id);
@@ -1027,6 +1028,7 @@ pub async fn commit_symbol_set(
                 background: meta.background,
                 stages: Vec::new(),
                 mass_report: None,
+            tone_report: None,
                 locked: false,
             });
             record.active_variation = Some(var_id);
@@ -1285,6 +1287,7 @@ pub fn import_source_image(
         },
         stages: Vec::new(),
         mass_report: None,
+            tone_report: None,
         locked: false,
     };
     record.variations.push(variation);
@@ -1382,6 +1385,7 @@ pub async fn alpha_erase(
         background: providers::BgMode::Native,
         stages: Vec::new(),
         mass_report: None,
+            tone_report: None,
         locked: false,
     });
     record.active_variation = Some(new_id);
@@ -1574,6 +1578,7 @@ outward, no borders, no letterboxing, no empty bands.",
         background: out_bg,
         stages: Vec::new(),
         mass_report: None,
+            tone_report: None,
         locked: false,
     });
     record.active_variation = Some(new_id);
@@ -1657,6 +1662,7 @@ pub async fn upscale_variation(
         background: bg,
         stages: Vec::new(),
         mass_report: None,
+            tone_report: None,
         locked: false,
     });
     record.active_variation = Some(new_id);

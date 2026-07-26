@@ -112,6 +112,33 @@ pub async fn process_variation_core(
         None
     };
 
+    // Tone spec: symbols use their class band (per-symbol override wins); scene
+    // assets use their declared tonalTarget. No band → no pass.
+    let tone_spec = {
+        let t = project.config.symbol_tone;
+        let band = if descriptor.kind == AssetKind::Symbol {
+            project.config.symbol_for_asset(&asset_key).map(|(sym, _)| {
+                match sym.tone_target {
+                    Some(m) => (m, m),
+                    None => {
+                        let b = t.class_for(sym.role);
+                        (b.min, b.max)
+                    }
+                }
+            })
+        } else {
+            scene_def.and_then(|d| d.tonal_target).map(|b| (b.min, b.max))
+        };
+        band.map(|(min, max)| crate::processing::tone::ToneSpec {
+            min,
+            max,
+            alpha_floor: t.alpha_floor,
+            ceiling: t.ceiling,
+            gamma_lo: t.gamma_lo,
+            gamma_hi: t.gamma_hi,
+        })
+    };
+
     // Scene exports honor the project's WebP quality; everything else uses the default.
     let webp_quality = if descriptor.category == "scenes" {
         project.config.scene.webp_quality.clamp(10, 100) as f32
@@ -120,7 +147,7 @@ pub async fn process_variation_core(
     };
 
     // Heavy image + subprocess work off the async runtime.
-    let (stages, mass_report) = tauri::async_runtime::spawn_blocking(move || {
+    let (stages, mass_report, tone_report) = tauri::async_runtime::spawn_blocking(move || {
         processing::run_pipeline(
             &raw_path,
             &stages_dir,
@@ -130,6 +157,7 @@ pub async fn process_variation_core(
             bg,
             nine_slice,
             mass,
+            tone_spec,
             webp_quality,
             chroma_sweep,
             &pre,
@@ -140,6 +168,7 @@ pub async fn process_variation_core(
 
     record.variations[idx].stages = stages;
     record.variations[idx].mass_report = mass_report;
+    record.variations[idx].tone_report = tone_report;
     storage::write_asset_record(&base, &game_id, &record)?;
     Ok(record)
 }

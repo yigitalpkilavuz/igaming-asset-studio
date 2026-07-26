@@ -10,6 +10,7 @@ fn sym(key: &str, role: SymbolRole) -> SymbolDef {
         description: String::new(),
         animation: String::new(),
         size_nudge: 1.0,
+            tone_target: None,
     }
 }
 
@@ -60,6 +61,7 @@ fn babewyn_config() -> GameConfig {
         has_mascot: false,
         mascot_description: String::new(),
             symbol_sizing: Default::default(),
+            symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
     }
@@ -101,6 +103,7 @@ fn lines_config() -> GameConfig {
         has_mascot: false,
         mascot_description: String::new(),
             symbol_sizing: Default::default(),
+            symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
     }
@@ -284,6 +287,7 @@ fn scene_assets_derive_and_plates_replace_stock_backgrounds() {
             description: "a storm-lashed lighthouse interior".into(),
             provider: String::new(),
             cutouts: false,
+                tonal_target: None,
             wrap: false,
             placement: None,
             variants: vec![
@@ -303,6 +307,7 @@ fn scene_assets_derive_and_plates_replace_stock_backgrounds() {
             description: "the storm sky inside the window arch".into(),
             provider: "spritecook".into(),
             cutouts: false,
+                tonal_target: None,
             wrap: false,
             placement: None,
             variants: vec![SceneVariantDef { key: "tempest".into(), preset: "landscape".into(), extra_prompt: String::new(), placement: None }],
@@ -314,6 +319,7 @@ fn scene_assets_derive_and_plates_replace_stock_backgrounds() {
             description: String::new(),
             provider: String::new(),
             cutouts: false,
+                tonal_target: None,
             wrap: false,
             placement: None,
             variants: vec![],

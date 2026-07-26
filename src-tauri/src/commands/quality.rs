@@ -162,6 +162,68 @@ pub async fn asset_quality_core(
     let is_symbol = descriptor.kind == AssetKind::Symbol && !expanded;
     let author_long = descriptor.author_w.unwrap_or(0).max(descriptor.author_h.unwrap_or(0));
 
+    // ── Tonal band (value budget): the UNLIT architecture separates layers by
+    //    value alone; the tone pass bakes the correction, this check surfaces it. ──
+    {
+        let has_band = descriptor.kind == AssetKind::Symbol
+            || project
+                .config
+                .scene
+                .def_for_key(&asset_key)
+                .is_some_and(|d| d.tonal_target.is_some());
+        if let Some(t) = &var.tone_report {
+            let f = |v: f64| format!("{:.3}", v);
+            match t.flag.as_str() {
+                "in_band" => checks.push(check(
+                    "tone",
+                    "Tonal band",
+                    "pass",
+                    format!("Median {} in band {}–{}.", f(t.median_before), f(t.band_min), f(t.band_max)),
+                )),
+                "corrected" => checks.push(check(
+                    "tone",
+                    "Tonal band",
+                    "pass",
+                    format!(
+                        "Tone-corrected {} → {} (band {}–{}, γ {:.2}).",
+                        f(t.median_before), f(t.median_after), f(t.band_min), f(t.band_max), t.gamma_applied
+                    ),
+                )),
+                "needs_regen" => checks.push(check(
+                    "tone",
+                    "Tonal band",
+                    "fail",
+                    format!(
+                        "NEEDS REGEN: median {} vs band {}–{} needs γ {:.2} (clamp {:.2}) — that far off is a generation problem, not a grading job. Regenerate; the export/publish gate will refuse it.",
+                        f(t.median_before), f(t.band_min), f(t.band_max), t.gamma_required, t.gamma_applied
+                    ),
+                )),
+                _ => checks.push(check(
+                    "tone",
+                    "Tonal band",
+                    "warn",
+                    "No opaque pixels to measure — check the cutout.",
+                )),
+            }
+            if t.ceiling_hit {
+                checks.push(check(
+                    "tone-ceiling",
+                    "Flash headroom",
+                    "warn",
+                    "Median sits at the 0.92 ceiling — the runtime strike flash has no headroom.",
+                ));
+            }
+        } else if has_band {
+            checks.push(check(
+                "tone",
+                "Tonal band",
+                "warn",
+                "No tone report — Reprocess to run the value-budget pass on this take.",
+            ));
+        }
+    }
+
+
     let mut px = tauri::async_runtime::spawn_blocking(move || {
         pixel_checks(&bytes, is_symbol, author_long, scene_def.as_ref())
     })

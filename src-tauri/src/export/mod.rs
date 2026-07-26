@@ -24,6 +24,12 @@ pub struct ExportReport {
     pub waived: Vec<String>,
     /// The `assets.ts` manifest fragment (§17).
     pub manifest_snippet: String,
+    /// Value-budget gate outcome (None only for legacy callers).
+    #[serde(default)]
+    pub tone: Option<ValueReport>,
+    /// True when the gate refused and nothing was written (re-run with force to override).
+    #[serde(default)]
+    pub blocked: bool,
 }
 
 /// Preload set (§17) — assets needed before first interaction.
@@ -31,8 +37,182 @@ fn is_preload(key: &str) -> bool {
     key.starts_with("bg_base_") || key.starts_with("splash_hero_")
 }
 
+/// One asset's row in the value-budget gate report.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ToneGateRow {
+    pub key: String,
+    pub median: f64,
+    pub band_min: f64,
+    pub band_max: f64,
+    /// "in_band" | "corrected" | "needs_regen" | "unmeasured"
+    pub flag: String,
+}
+
+/// The value-budget gate: per-asset band conformance + cross-asset ordering.
+/// `ok == false` blocks export/publish unless the user forces.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ValueReport {
+    pub ok: bool,
+    pub rows: Vec<ToneGateRow>,
+    /// Human-readable violations, most severe first.
+    pub violations: Vec<String>,
+}
+
+/// Measure a shipped asset's median value straight off its processed png/jpg twin
+/// (fallback when no tone report exists — e.g. processed before the tone pass).
+fn shipped_median(base: &Path, game_id: &str, key: &str, alpha_floor: u8) -> Option<f64> {
+    let rec = storage::read_asset_record(base, game_id, key).ok().flatten()?;
+    let active = rec.active_variation.as_ref()?;
+    let var = rec.variations.iter().find(|v| &v.id == active)?;
+    let stage = var
+        .stages
+        .iter()
+        .find(|s| s.name == "png")
+        .or_else(|| var.stages.iter().find(|s| s.name == "jpg"))?;
+    let path = storage::variation_dir(base, game_id, key, &var.id).join(&stage.file);
+    let img = image::open(path).ok()?.to_rgba8();
+    crate::processing::tone::median_value(&img, alpha_floor)
+}
+
+/// The SHARED value-budget gate — export and publish both run exactly this, so both
+/// exits give the same verdict. Checks every banded asset in `keys` (None = all
+/// derived assets) against its band, then asserts the blueprint's tone-ordering rules
+/// on shipped medians.
+pub fn tone_gate(
+    base: &Path,
+    game_id: &str,
+    keys: Option<&[String]>,
+) -> Result<ValueReport, String> {
+    let project = storage::read_project(base, game_id)?;
+    let cfg = &project.config;
+    let t = cfg.symbol_tone;
+    let assets = taxonomy::derive_assets(cfg);
+
+    let mut rows = Vec::new();
+    let mut violations = Vec::new();
+    let mut medians: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+
+    for asset in &assets {
+        if asset.production != Production::Raster {
+            continue;
+        }
+        if keys.is_some_and(|ks| !ks.contains(&asset.key)) {
+            continue;
+        }
+        // Band: symbols → class band / per-symbol override; scenes → tonalTarget.
+        let band = if let Some((sym, _)) = cfg.symbol_for_asset(&asset.key) {
+            Some(match sym.tone_target {
+                Some(m) => (m, m),
+                None => {
+                    let b = t.class_for(sym.role);
+                    (b.min, b.max)
+                }
+            })
+        } else {
+            cfg.scene
+                .def_for_key(&asset.key)
+                .and_then(|d| d.tonal_target)
+                .map(|b| (b.min, b.max))
+        };
+        let Some((min, max)) = band else { continue };
+
+        let rec = storage::read_asset_record(base, game_id, &asset.key)?;
+        let var = rec.as_ref().and_then(|r| {
+            r.active_variation
+                .as_ref()
+                .and_then(|id| r.variations.iter().find(|v| &v.id == id))
+        });
+        // Unprocessed / missing assets are the export "missing" list's business,
+        // not the tone gate's.
+        if var.is_none_or(|v| !v.stages.iter().any(|s| s.name == "webp")) {
+            continue;
+        }
+        let var = var.unwrap();
+
+        let (median, flag) = match &var.tone_report {
+            Some(r) => (
+                r.median_after,
+                if r.flag == "needs_regen" { "needs_regen" } else if r.flag == "corrected" { "corrected" } else { "in_band" },
+            ),
+            None => match shipped_median(base, game_id, &asset.key, t.alpha_floor) {
+                // No tone report = processed before the tone pass. Out-of-band here
+                // is only a REGEN case when the needed gamma exceeds the clamp —
+                // otherwise a plain Reprocess bakes the correction.
+                Some(m) => {
+                    let flag = if m >= min && m <= max {
+                        "in_band"
+                    } else if m > 1.0 / 255.0 && m < 1.0 {
+                        let g = m.clamp(min, max).ln() / m.ln();
+                        if g >= t.gamma_lo && g <= t.gamma_hi { "reprocess" } else { "needs_regen" }
+                    } else {
+                        "needs_regen"
+                    };
+                    (m, flag)
+                }
+                None => (0.0, "unmeasured"),
+            },
+        };
+        medians.insert(asset.key.clone(), median);
+        match flag {
+            "needs_regen" => violations.push(format!(
+                "{}: median {:.3} vs band {:.3}–{:.3} — regenerate (correction beyond the gamma clamp)",
+                asset.key, median, min, max
+            )),
+            "reprocess" => violations.push(format!(
+                "{}: median {:.3} vs band {:.3}–{:.3} — run Process to bake the tone correction",
+                asset.key, median, min, max
+            )),
+            _ => {}
+        }
+        rows.push(ToneGateRow {
+            key: asset.key.clone(),
+            median,
+            band_min: min,
+            band_max: max,
+            flag: flag.into(),
+        });
+    }
+
+    // Cross-asset ordering (e.g. back wall < storm sky, or windows read as holes).
+    for rule in &cfg.scene.tone_ordering {
+        let (Some(&lo), Some(&hi)) = (medians.get(&rule.darker), medians.get(&rule.brighter))
+        else {
+            continue; // one side not shipping in this run — nothing to assert
+        };
+        if lo >= hi {
+            violations.push(format!(
+                "ordering broken: {} ({:.3}) must stay darker than {} ({:.3})",
+                rule.darker, lo, rule.brighter, hi
+            ));
+        }
+    }
+
+    Ok(ValueReport { ok: violations.is_empty(), rows, violations })
+}
+
 /// Build the dist tree for a game and return a report. Rebuilds dist from scratch.
 pub fn build_dist(base: &Path, game_id: &str) -> Result<ExportReport, String> {
+    build_dist_gated(base, game_id, true)
+}
+
+/// `force = false` → the value-budget gate can refuse: nothing is written and the
+/// report comes back `blocked` with the violations. `force = true` writes regardless
+/// (the report still carries the violations + value_report.json lands in dist).
+pub fn build_dist_gated(base: &Path, game_id: &str, force: bool) -> Result<ExportReport, String> {
+    let tone = tone_gate(base, game_id, None)?;
+    if !tone.ok && !force {
+        return Ok(ExportReport {
+            dist_path: String::new(),
+            written: Vec::new(),
+            missing: Vec::new(),
+            waived: Vec::new(),
+            manifest_snippet: String::new(),
+            tone: Some(tone),
+            blocked: true,
+        });
+    }
     let project = storage::read_project(base, game_id)?;
     let assets = taxonomy::derive_assets(&project.config);
 
@@ -110,12 +290,19 @@ pub fn build_dist(base: &Path, game_id: &str) -> Result<ExportReport, String> {
     fs::write(dist_root.join("assets.ts.snippet"), &snippet)
         .map_err(|e| format!("write manifest failed: {e}"))?;
 
+    // The value-budget verdict ships WITH the dist so the game agent can read it.
+    if let Ok(json) = serde_json::to_vec_pretty(&tone) {
+        let _ = fs::write(dist_root.join("value_report.json"), json);
+    }
+
     Ok(ExportReport {
         dist_path: dist_root.to_string_lossy().into_owned(),
         written,
         missing,
         waived,
         manifest_snippet: snippet,
+        tone: Some(tone),
+        blocked: false,
     })
 }
 
@@ -463,6 +650,7 @@ mod tests {
                 name: "H1".into(),
                 description: String::new(), animation: String::new(),
                 size_nudge: 1.0,
+            tone_target: None,
             }],
             has_feature_background: false,
             has_buy_bonus: false,
@@ -474,6 +662,7 @@ mod tests {
             has_mascot: false,
             mascot_description: String::new(),
             symbol_sizing: Default::default(),
+            symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
         }
@@ -511,6 +700,7 @@ mod tests {
                 status: VariationStatus::Ready,
                 background: Default::default(),
                 mass_report: None,
+            tone_report: None,
                 locked: false,
                 stages: vec![StageOutput {
                     name: "webp".into(),
@@ -570,6 +760,7 @@ mod tests {
                 status: VariationStatus::Ready,
                 background: Default::default(),
                 mass_report: None,
+            tone_report: None,
                 locked: false,
                 stages: vec![StageOutput { name: "webp".into(), file: "stages/final.webp".into() }],
             }],
@@ -649,6 +840,7 @@ mod tests {
                 status: VariationStatus::Ready,
                 background: Default::default(),
                 mass_report: None,
+            tone_report: None,
                 locked: false,
                 stages: vec![StageOutput { name: "webp".into(), file: "stages/final.webp".into() }],
             }],
@@ -711,6 +903,7 @@ mod scene_manifest_tests {
             has_mascot: false,
             mascot_description: String::new(),
             symbol_sizing: Default::default(),
+            symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
         };
@@ -725,6 +918,7 @@ mod scene_manifest_tests {
                 description: String::new(),
                 provider: String::new(),
                 cutouts: false,
+                tonal_target: None,
                 wrap: true,
                 placement: Some(ScenePlacement {
                     parallax: Some(0.05),
@@ -740,6 +934,7 @@ mod scene_manifest_tests {
                 description: String::new(),
                 provider: String::new(),
                 cutouts: false,
+                tonal_target: None,
                 wrap: false,
                 placement: Some(ScenePlacement {
                     fit: "anchored".into(),

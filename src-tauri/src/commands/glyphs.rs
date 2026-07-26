@@ -328,6 +328,7 @@ pub async fn glyph_compose(
             },
             stages: Vec::new(),
         mass_report: None,
+            tone_report: None,
             locked: false,
         });
         record.active_variation = Some(var_id);

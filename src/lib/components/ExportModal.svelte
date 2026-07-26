@@ -10,11 +10,11 @@
   let loading = $state(true);
   let copied = $state(false);
 
-  async function run() {
+  async function run(force = false) {
     loading = true;
     error = "";
     try {
-      report = await unwrap(commands.exportDist(gameId));
+      report = await unwrap(commands.exportDist(gameId, force));
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -61,8 +61,26 @@
       <p class="muted pad">Assembling the dist tree…</p>
     {:else if error}
       <p class="warn pad">{error}</p>
-      <div class="foot"><button onclick={run}>Try again</button></div>
+      <div class="foot"><button onclick={() => run()}>Try again</button></div>
+    {:else if report?.blocked}
+      <div class="body">
+        <p class="gate-title">⛔ Value budget gate — export refused</p>
+        <p class="muted small">
+          These assets sit outside their tonal band beyond correction. Regenerate them,
+          or export anyway if you accept the drift.
+        </p>
+        <ul class="gate-list">
+          {#each report.tone?.violations ?? [] as v (v)}<li class="mono">{v}</li>{/each}
+        </ul>
+        <div class="row">
+          <button class="danger" onclick={() => run(true)}>Export anyway</button>
+          <button class="ghost" onclick={onclose}>Cancel</button>
+        </div>
+      </div>
     {:else if report}
+      {#if report.tone && !report.tone.ok}
+        <p class="gate-warn mono">⚠ exported WITH value-budget violations ({report.tone.violations.length}) — see value_report.json</p>
+      {/if}
       <div class="tallies">
         <div class="tally">
           <span class="num display">{report.written.length}</span>
@@ -107,6 +125,30 @@
 </div>
 
 <style>
+  .gate-title {
+    font-weight: 600;
+    color: var(--red, #e5484d);
+    margin: 0 0 0.3rem;
+  }
+  .gate-list {
+    margin: 0.5rem 0;
+    padding-left: 1.1rem;
+    font-size: 0.72rem;
+    line-height: 1.6;
+    max-height: 40vh;
+    overflow-y: auto;
+  }
+  .gate-warn {
+    font-size: 0.7rem;
+    color: var(--gold-bright);
+    margin: 0.3rem 0 0;
+  }
+  .row {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.8rem;
+  }
+
   .scrim {
     position: fixed;
     inset: 0;
