@@ -499,6 +499,48 @@
     }
   }
 
+  // ── Cloud cut ALL parts: one paint-out call per empty part, in parallel; results
+  //    auto-apply (doc writes serialized — they must not race). Parts that already
+  //    have a selection are left alone; re-cut those individually.
+  let cloudAllBusy = $state(false);
+  async function cloudCutAll() {
+    const targets = doc.parts.filter((p) => !maskUrls[p.id]);
+    if (!targets.length) {
+      autoMsg = "Every part already has a selection — cloud-cut a single part to redo one.";
+      return;
+    }
+    cloudAllBusy = true;
+    error = "";
+    autoMsg = `☁ Cloud paint-out ×${targets.length} — one call per part, in parallel… (uses OpenAI)`;
+    const results = await Promise.all(
+      targets.map(async (part) => ({ part, r: await commands.studioCloudCut(gameId, assetKey, part.id) })),
+    );
+    let done = 0;
+    const fails: string[] = [];
+    for (const { part, r } of results) {
+      if (r.status !== "ok") {
+        fails.push(part.name || part.id);
+        continue;
+      }
+      try {
+        const updated = await unwrap(
+          commands.studioSetMask(gameId, assetKey, part.id, r.data.maskDataUrl, []),
+        );
+        Object.assign(doc, updated);
+        maskUrls = { ...maskUrls, [part.id]: r.data.maskDataUrl };
+        if (part.bbox) dirtySinceCut = new Set([...dirtySinceCut, part.id]);
+        done++;
+      } catch {
+        fails.push(part.name || part.id);
+      }
+    }
+    refreshInpaint();
+    autoMsg = fails.length
+      ? `${done} selections filled · failed: ${fails.join(", ")} — cloud-cut those individually.`
+      : `${done} selections filled — check each part's tint, then Cut parts.`;
+    cloudAllBusy = false;
+  }
+
   async function cutParts() {
     cutting = true;
     error = "";
@@ -565,6 +607,17 @@
               ? "✦ Re-select parts"
               : "✦ Select parts (AI)"}
       </button>
+      {#if doc.parts.length && doc.parts.some((p) => !maskUrls[p.id])}
+        <button
+          disabled={cloudAllBusy || cloudBusy || autoRunning || cutting}
+          onclick={cloudCutAll}
+          title="one cloud paint-out call PER empty part, run in parallel — the model isolates each named part semantically; parts that already have a selection are skipped (~20 s, uses OpenAI per part)"
+        >
+          {cloudAllBusy
+            ? "☁ Cutting all…"
+            : `☁ ✦ Cloud cut all (${doc.parts.filter((p) => !maskUrls[p.id]).length})`}
+        </button>
+      {/if}
     </div>
     <PartsPanel
       parts={visibleParts}
