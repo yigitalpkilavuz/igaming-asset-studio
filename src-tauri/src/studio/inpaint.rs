@@ -53,12 +53,24 @@ pub fn compute_zone(own: &GrayImage, above: &[&GrayImage], r: u32) -> Option<Gra
     if above.is_empty() {
         return None;
     }
-    let mut dil: Vec<bool> = own.pixels().map(|p| p.0[0] > 127).collect();
+    // CRUMB HYGIENE: masks left over from imperfect part claiming litter tiny specks
+    // across OTHER parts' territory. Dilating those specks bridges them into a zone
+    // that can cover entire neighbouring parts — and the model then "completes" the
+    // part by repainting whole arms and legs into it (observed on a real mascot: the
+    // body's fill regrew the full character). Only the part's REAL silhouette may
+    // seed the band, so drop connected components below 1% of the largest one.
+    let cleaned = drop_specks(own);
+    let mut dil: Vec<bool> = cleaned.pixels().map(|p| p.0[0] > 127).collect();
     dilate(&mut dil, w as usize, h as usize, r as usize);
 
     let mut any = false;
     let mut out = GrayImage::new(w, h);
+    let mut zone_px = 0u64;
+    let mut own_px = 0u64;
     for (i, px) in out.pixels_mut().enumerate() {
+        if own.as_raw()[i] > 127 {
+            own_px += 1;
+        }
         let covered = above.iter().any(|m| m.as_raw()[i] > 127);
         // The band is everything near/within P that sits under a part drawn above it:
         // P's own mask pixels lost to overlap claiming AND the joint-overlap extension.
@@ -66,10 +78,62 @@ pub fn compute_zone(own: &GrayImage, above: &[&GrayImage], r: u32) -> Option<Gra
         let on = dil[i] && covered;
         if on {
             any = true;
+            zone_px += 1;
             px.0[0] = 255;
         }
     }
+    // SIZE GUARD: a band bigger than 60% of the part itself is not occlusion
+    // completion any more — it is an invitation to repaint the neighbours. That much
+    // hidden area means the masks are broken; surface it instead of generating junk.
+    if zone_px > own_px.max(1) * 6 / 10 {
+        return None;
+    }
     any.then_some(out)
+}
+
+/// Keep only connected components ≥ 1% of the largest one (min 32 px) — the part's
+/// true silhouette (possibly multi-piece), never claiming residue.
+fn drop_specks(m: &GrayImage) -> GrayImage {
+    let (w, h) = m.dimensions();
+    let (w_us, h_us) = (w as usize, h as usize);
+    let bits: Vec<bool> = m.pixels().map(|p| p.0[0] > 127).collect();
+    let mut label = vec![0u32; bits.len()];
+    let mut sizes: Vec<u64> = vec![0]; // sizes[0] unused
+    let mut next = 1u32;
+    let mut stack = Vec::new();
+    for start in 0..bits.len() {
+        if !bits[start] || label[start] != 0 {
+            continue;
+        }
+        let id = next;
+        next += 1;
+        sizes.push(0);
+        stack.push(start);
+        label[start] = id;
+        while let Some(i) = stack.pop() {
+            sizes[id as usize] += 1;
+            let (x, y) = (i % w_us, i / w_us);
+            let mut push = |j: usize| {
+                if bits[j] && label[j] == 0 {
+                    label[j] = id;
+                    stack.push(j);
+                }
+            };
+            if x > 0 { push(i - 1); }
+            if x + 1 < w_us { push(i + 1); }
+            if y > 0 { push(i - w_us); }
+            if y + 1 < h_us { push(i + w_us); }
+        }
+    }
+    let largest = sizes.iter().copied().max().unwrap_or(0);
+    let floor = (largest / 100).max(32);
+    let mut out = GrayImage::new(w, h);
+    for (i, px) in out.pixels_mut().enumerate() {
+        if label[i] != 0 && sizes[label[i] as usize] >= floor {
+            px.0[0] = 255;
+        }
+    }
+    out
 }
 
 use matte::dilate;
@@ -127,8 +191,9 @@ pub fn plan_fill(id: &str, spec: &FillSpec) -> Result<Option<InpaintJob>, String
         return Ok(None);
     };
 
-    // Cache key: mask geometry ‖ prompt ‖ radius.
+    // Cache key: mask geometry ‖ prompt ‖ radius ‖ zone-algorithm version.
     let mut hash_input = spec.hash_extra.to_vec();
+    hash_input.extend_from_slice(b"zone-v2"); // crumb hygiene + size guard
     hash_input.extend_from_slice(spec.prompt.as_bytes());
     hash_input.extend_from_slice(&spec.radius.to_le_bytes());
     let hash = sha256_hex(&hash_input)[..8].to_string();
@@ -433,6 +498,54 @@ fn encode_png_rgba(img: &RgbaImage) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
     use crate::studio::doc::{Part, PartTexture, SourceRef};
+
+    /// The real-world failure: crumbs left in the body mask scattered across the
+    /// arm's territory turned the fill zone into "the whole arm", and the model
+    /// repainted the limb into the body texture. Crumbs must not seed the band.
+    #[test]
+    fn crumbs_do_not_grow_the_zone_into_neighbour_parts() {
+        let (w, h) = (200u32, 200u32);
+        // Body: solid 80×180 block on the left…
+        let mut body = GrayImage::from_fn(w, h, |x, _| image::Luma([if x < 80 { 255 } else { 0 }]));
+        // …plus residue specks sprinkled inside the arm's territory (x 120–180).
+        for i in 0..30u32 {
+            let (x, y) = (120 + (i * 7) % 60, 10 + (i * 13) % 180);
+            body.put_pixel(x, y, image::Luma([255]));
+        }
+        // Arm: solid 60×180 block on the right, drawn ABOVE the body.
+        let arm = GrayImage::from_fn(w, h, |x, _| image::Luma([if (120..180).contains(&x) { 255 } else { 0 }]));
+
+        // The body's true silhouette (x<80, dilated to <92) never touches the arm
+        // (x≥120): with the crumbs ignored there is NO occlusion band at all.
+        assert!(
+            compute_zone(&body, &[&arm], 12).is_none(),
+            "crumb-seeded fill must not cover the arm"
+        );
+
+        // Control: a body that genuinely reaches under the arm keeps its band.
+        let touching =
+            GrayImage::from_fn(w, h, |x, _| image::Luma([if x < 130 { 255 } else { 0 }]));
+        let zone = compute_zone(&touching, &[&arm], 12).expect("real joint keeps its band");
+        let band: Vec<u32> = zone
+            .enumerate_pixels()
+            .filter(|(_, _, p)| p.0[0] > 127)
+            .map(|(x, _, _)| x)
+            .collect();
+        assert!(band.iter().all(|&x| (120..143).contains(&x)), "band hugs the true overlap");
+    }
+
+    /// A band bigger than 60% of the part itself means the masks are broken —
+    /// refuse to plan a fill instead of inviting a full repaint.
+    #[test]
+    fn oversized_zones_are_refused() {
+        let (w, h) = (100u32, 100u32);
+        let own = GrayImage::from_fn(w, h, |x, y| {
+            image::Luma([if x < 40 && y < 40 { 255 } else { 0 }])
+        });
+        // An occluder covering almost everything, including all of `own`.
+        let above = GrayImage::from_fn(w, h, |_, _| image::Luma([255]));
+        assert!(compute_zone(&own, &[&above], 12).is_none(), "zone > 60% of part must refuse");
+    }
 
     fn rect_mask(w: u32, h: u32, r: Rect) -> GrayImage {
         GrayImage::from_fn(w, h, |x, y| {
