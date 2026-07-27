@@ -16,6 +16,7 @@
   } from "$lib/ipc";
   import EditCanvas, { type GizmoBone } from "./EditCanvas.svelte";
   import BoneTree from "./BoneTree.svelte";
+  import Slider from "./Slider.svelte";
   import PoseOverlay from "./PoseOverlay.svelte";
   import SpinePreview from "./SpinePreview.svelte";
 
@@ -515,48 +516,14 @@
           </label>
           {#if bonePhysics}
             <div class="grid2 phys-grid">
-              <label class="field">
-                <span class="muted tiny">stiffness</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="300"
-                  step="5"
-                  value={bonePhysics.strength ?? 60}
-                  oninput={(e) => patchPhysics({ strength: +e.currentTarget.value })}
-                />
-              </label>
-              <label class="field">
-                <span class="muted tiny">damping</span>
-                <input
-                  type="number"
-                  min="0.3"
-                  max="1"
-                  step="0.05"
-                  value={bonePhysics.damping ?? 0.85}
-                  oninput={(e) => patchPhysics({ damping: +e.currentTarget.value })}
-                />
-              </label>
-              <label class="field">
-                <span class="muted tiny">inertia</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={bonePhysics.inertia ?? 0.5}
-                  oninput={(e) => patchPhysics({ inertia: +e.currentTarget.value })}
-                />
-              </label>
-              <label class="field">
-                <span class="muted tiny">gravity</span>
-                <input
-                  type="number"
-                  step="5"
-                  value={bonePhysics.gravity ?? 0}
-                  oninput={(e) => patchPhysics({ gravity: +e.currentTarget.value })}
-                />
-              </label>
+              <Slider label="stiffness" value={bonePhysics.strength ?? 60} min={1} max={300} step={5} decimals={0}
+                oninput={(v) => patchPhysics({ strength: v })} />
+              <Slider label="damping" value={bonePhysics.damping ?? 0.85} min={0.3} max={1} step={0.05} decimals={2}
+                oninput={(v) => patchPhysics({ damping: v })} />
+              <Slider label="inertia" value={bonePhysics.inertia ?? 0.5} min={0} max={1} step={0.05} decimals={2}
+                oninput={(v) => patchPhysics({ inertia: v })} />
+              <Slider label="gravity" value={bonePhysics.gravity ?? 0} min={-40} max={40} step={5} decimals={0}
+                oninput={(v) => patchPhysics({ gravity: v })} />
             </div>
             <p class="muted tiny">
               Runtime-simulated — no keyframes. Try Test pose: yank a parent bone and watch
@@ -800,9 +767,6 @@
     gap: 0.35rem;
     color: var(--bone-dim);
     margin-top: 0.3rem;
-  }
-  .phys-grid input {
-    font-size: 0.72rem;
   }
   .tiny-btn {
     font-size: 0.7rem;

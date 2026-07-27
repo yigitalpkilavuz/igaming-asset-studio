@@ -83,6 +83,26 @@
     return `${(t as { slotAttachment: string }).slotAttachment} · swap`;
   }
 
+  /** The bone/slot a track targets (the single key's value). */
+  function chName(t: TimelineTarget): string {
+    return (Object.values(t)[0] as string) ?? "";
+  }
+  /** Per-channel glyph + colour class for the track row. */
+  function chKind(t: TimelineTarget): { icon: string; cls: string; label: string } {
+    if ("boneRotate" in t) return { icon: "↻", cls: "rot", label: "rotate" };
+    if ("boneTranslate" in t) return { icon: "✛", cls: "move", label: "translate" };
+    if ("boneScale" in t) return { icon: "⤢", cls: "scale", label: "scale" };
+    if ("slotAlpha" in t) return { icon: "◐", cls: "alpha", label: "alpha" };
+    if ("slotColor" in t) return { icon: "●", cls: "color", label: "colour" };
+    if ("slotDeform" in t) return { icon: "∿", cls: "deform", label: "deform" };
+    return { icon: "⇄", cls: "swap", label: "swap" };
+  }
+  /** What an attachment-swap track flips to (first alternate, or plain show/hide). */
+  function swapMeta(t: TimelineTarget): string {
+    const name = "slotAttachment" in t ? t.slotAttachment : "";
+    return doc.slots.find((s) => s.name === name)?.alternates?.[0] ?? "show / hide";
+  }
+
   function components(t: TimelineTarget): number {
     if ("slotColor" in t) return 3;
     if ("slotAttachment" in t) return 1;
@@ -244,6 +264,9 @@
           title="double-click to rename"
         >
           {c.name}
+          <span class="cglyph" class:oneshot={c.looping === false} title={c.looping === false ? "one-shot beat" : "looping idle"}>
+            {c.looping === false ? "▸" : "∞"}
+          </span>
         </button>
       {/if}
     {/each}
@@ -303,21 +326,21 @@
   </div>
 
   <div class="playbar">
-    <button class="play" onclick={onplaytoggle}>{playing ? "❚❚" : "▶"}</button>
-    <span class="mono t">{time.toFixed(2)} / {duration.toFixed(2)}s</span>
-    <label class="opt"><input type="checkbox" checked={loop} onchange={onlooptoggle} /><span class="tiny">loop</span></label>
-    <label class="opt" title="onion skin: ghost the neighboring frames — red = past, green = future"><input type="checkbox" checked={onion} onchange={ononiontoggle} /><span class="tiny">onion</span></label>
-    <label class="opt tiny muted">
-      speed
-      <select class="speedsel" value={speed} onchange={(e) => onspeed(+e.currentTarget.value)}>
-        <option value="0.25">0.25×</option>
-        <option value="0.5">0.5×</option>
-        <option value="1">1×</option>
-        <option value="1.5">1.5×</option>
-        <option value="2">2×</option>
-      </select>
-    </label>
-    <span class="muted tiny mono">{fps} fps grid · alt-click lane = add key</span>
+    <button class="play" onclick={onplaytoggle} title={playing ? "pause" : "play"}>{playing ? "❚❚" : "▶"}</button>
+    <span class="mono t num">{time.toFixed(2)} / {duration.toFixed(2)}s</span>
+    <button class="tgl" class:on={loop} onclick={onlooptoggle} title="loop playback">∞ loop</button>
+    <button
+      class="tgl"
+      class:on={onion}
+      onclick={ononiontoggle}
+      title="onion skin: ghost the neighbouring frames — red = past, green = future"
+    >◐ onion</button>
+    <div class="seg" title="playback speed">
+      {#each [0.25, 0.5, 1, 1.5, 2] as s (s)}
+        <button class:on={speed === s} onclick={() => onspeed(s)}>{s}×</button>
+      {/each}
+    </div>
+    <span class="muted tiny mono">{fps} fps · alt-click lane = add key</span>
   </div>
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -333,7 +356,13 @@
       {#each clip.timelines as tl, ti (targetLabel(tl.target))}
         <div class="row" data-row={ti}>
           <div class="label">
-            <span class="mono lname">{targetLabel(tl.target)}</span>
+            <span class="ticon {chKind(tl.target).cls}" title={chKind(tl.target).label}>{chKind(tl.target).icon}</span>
+            <span class="tname mono">{chName(tl.target)}</span>
+            {#if "slotDeform" in tl.target}
+              <span class="tmeta gen">generated · {((tl.keys[0]?.v.length ?? 0) / 2) | 0} verts</span>
+            {:else if "slotAttachment" in tl.target}
+              <span class="tmeta att mono">{swapMeta(tl.target)}</span>
+            {/if}
             <button class="ghost x" title="remove track" onclick={() => removeTrack(ti)}>×</button>
           </div>
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
@@ -413,6 +442,17 @@
     color: var(--gold-bright);
     border-color: var(--gold-deep);
   }
+  .cglyph {
+    color: var(--ash-deep);
+    font-size: 0.72rem;
+    margin-left: 0.15rem;
+  }
+  .ctab.on .cglyph {
+    color: var(--lapis);
+  }
+  .ctab.on .cglyph.oneshot {
+    color: var(--gold);
+  }
   .addwrap {
     position: relative;
   }
@@ -454,8 +494,42 @@
     font-size: 0.72rem;
     width: 5.5rem;
   }
-  .speedsel {
+  .tgl {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.68rem;
+    color: var(--ash);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.15rem 0.5rem;
+  }
+  .tgl.on {
+    color: var(--bone);
+    border-color: var(--line-2);
+    background: var(--wash);
+  }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm, 6px);
+    overflow: hidden;
+  }
+  .seg button {
+    border: 0;
+    background: transparent;
+    color: var(--ash);
     font-size: 0.66rem;
+    padding: 0.15rem 0.45rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .seg button + button {
+    border-left: 1px solid var(--line);
+  }
+  .seg button.on {
+    color: var(--bone);
+    background: var(--wash);
   }
   .playbar {
     display: flex;
@@ -511,20 +585,67 @@
     flex: none;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 0 0.6rem 0 0.9rem;
+    gap: 0.4rem;
+    padding: 0 0.45rem 0 0.6rem;
+    min-width: 0;
   }
-  .lname {
+  .ticon {
+    width: 17px;
+    height: 17px;
+    flex: none;
+    display: grid;
+    place-items: center;
     font-size: 0.66rem;
+    border-radius: 4px;
+    background: var(--ink-4);
+    border: 1px solid var(--line);
+    color: var(--ash);
+  }
+  .ticon.rot,
+  .ticon.move,
+  .ticon.scale {
+    color: var(--lapis);
+  }
+  .ticon.color,
+  .ticon.alpha {
+    color: var(--gold);
+  }
+  .ticon.deform {
+    color: var(--sage);
+  }
+  .ticon.swap {
+    color: var(--oxblood);
+  }
+  .tname {
+    font-size: 0.72rem;
     color: var(--bone-dim);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .tmeta {
+    font-size: 0.56rem;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    white-space: nowrap;
+    flex: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 5.5rem;
+  }
+  .tmeta.gen {
+    color: var(--sage);
+    background: color-mix(in srgb, var(--sage) 14%, transparent);
+  }
+  .tmeta.att {
+    color: var(--oxblood);
+  }
   .x {
+    margin-left: auto;
     padding: 0 0.2rem;
     font-size: 0.7rem;
     opacity: 0;
+    flex: none;
   }
   .row:hover .x {
     opacity: 1;

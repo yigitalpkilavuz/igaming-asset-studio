@@ -37,6 +37,21 @@
   let staleSource = $state(false);
   let updatingSource = $state(false);
 
+  // Progress state carried on the mode tabs, so the Cut → Rig → Mesh → Animate path reads at a
+  // glance: a check once a step has produced real work, a count where it's meaningful.
+  const cutDone = $derived((doc?.parts.length ?? 0) > 1);
+  const rigDone = $derived((doc?.bones.length ?? 0) > 2);
+  const meshCount = $derived(
+    doc?.slots.filter((s) => typeof s.attachment === "object" && "mesh" in s.attachment).length ?? 0,
+  );
+  const clipCount = $derived(doc?.clips.length ?? 0);
+  function tabState(key: Mode): { cls: string; txt: string } | null {
+    if (key === "cut") return cutDone ? { cls: "ck", txt: "✓" } : null;
+    if (key === "rig") return rigDone ? { cls: "ck", txt: "✓" } : null;
+    if (key === "mesh") return meshCount > 0 ? { cls: "count", txt: String(meshCount) } : null;
+    return clipCount > 0 ? { cls: "count", txt: `${clipCount} clip${clipCount > 1 ? "s" : ""}` } : null;
+  }
+
   // Load or create the studio doc.
   $effect(() => {
     (async () => {
@@ -138,6 +153,9 @@
       {#each MODES as m (m.key)}
         <button class="mtab" class:on={mode === m.key} onclick={() => setMode(m.key)}>
           {m.label}
+          {#if tabState(m.key)}
+            <span class="tstate {tabState(m.key)?.cls}">{tabState(m.key)?.txt}</span>
+          {/if}
         </button>
       {/each}
     </nav>
@@ -241,6 +259,19 @@
   .mtab.on {
     color: var(--bone);
     border-bottom-color: var(--gold);
+  }
+  .tstate {
+    font-size: 0.6rem;
+  }
+  .tstate.ck {
+    color: var(--sage);
+  }
+  .tstate.count {
+    font-variant-numeric: tabular-nums;
+    color: var(--gold);
+    background: var(--gold-glow);
+    padding: 0.05rem 0.4rem;
+    border-radius: 999px;
   }
   .actions {
     display: flex;

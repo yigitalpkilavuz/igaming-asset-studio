@@ -34,6 +34,7 @@
     config,
     anchorRev = 0,
     onsaved,
+    onmanageanchor,
   }: {
     gameId: string;
     asset: AssetDescriptor;
@@ -41,6 +42,8 @@
     /** Bumped by the Producer when the style anchor changes. */
     anchorRev?: number;
     onsaved: (record: AssetRecord) => void;
+    /** Open the game's style-anchor manager (the chip is the entry point). */
+    onmanageanchor: () => void;
   } = $props();
 
   const animatable = $derived(asset.kind === "symbol" || asset.kind === "mascot");
@@ -114,11 +117,19 @@
   let layered = $state(false);
   /** The game has a style anchor — auto-attached to every cloud generation. */
   let hasAnchor = $state(false);
+  let anchorThumb = $state<string | null>(null);
   $effect(() => {
     void anchorRev;
     void jobsState.anchorRev;
     commands.styleAnchorPresent(gameId).then((r) => {
       if (r.status === "ok") hasAnchor = r.data;
+      if (r.status === "ok" && r.data) {
+        commands.getStyleAnchor(gameId).then((img) => {
+          if (img.status === "ok") anchorThumb = img.data;
+        });
+      } else {
+        anchorThumb = null;
+      }
     });
   });
 
@@ -1272,10 +1283,25 @@
             {/each}
           </select>
         </label>
-        {#if hasAnchor && supportsRefs}
-          <p class="anchor-chip tiny" title="the game's style anchor rides as the first reference of every generation — manage it via ⋯ → Style anchor">
-            ⚓ style anchor attached
-          </p>
+        {#if supportsRefs}
+          {#if hasAnchor}
+            <button
+              class="anchor-chip tiny"
+              onclick={onmanageanchor}
+              title="the game's style anchor rides as the first reference of every generation — click to replace or remove it"
+            >
+              {#if anchorThumb}<img class="anchor-thumb" src={anchorThumb} alt="style anchor" />{/if}
+              ⚓ style anchor
+            </button>
+          {:else}
+            <button
+              class="anchor-chip tiny invite"
+              onclick={onmanageanchor}
+              title="pick ONE key image that defines the game's look — it rides as the first reference of every generation"
+            >
+              ⚓ Set a style anchor…
+            </button>
+          {/if}
         {/if}
         {#if guideTemplates.length && supportsRefs}
           <label class="field">
@@ -1724,8 +1750,30 @@
     color: var(--bone);
   }
   .anchor-chip {
-    margin: 0;
-    color: var(--gold-deep);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--bone-dim);
+    padding: 0.25rem 0.5rem;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+  .anchor-chip:hover {
+    color: var(--bone);
+    border-color: var(--gold-deep);
+  }
+  .anchor-chip.invite {
+    background: none;
+    border-style: dashed;
+  }
+  .anchor-thumb {
+    width: 20px;
+    height: 20px;
+    object-fit: cover;
+    border-radius: 3px;
   }
   .sheet-preview {
     align-self: center;

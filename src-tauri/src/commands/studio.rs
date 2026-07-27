@@ -1730,8 +1730,24 @@ pub async fn studio_ai_polish_clip(
     if brief.trim().is_empty() {
         return Err("describe the motion first".into());
     }
+    use tauri::Emitter;
+    let emitter = app.clone();
     let image = std::fs::read(store::source_path(&base, &game_id, &asset_key)).ok();
-    motion::draft_clip_polished(&key, &doc, &name, &brief, image.as_deref(), candidates).await
+    motion::draft_clip_polished(
+        &key,
+        &doc,
+        &name,
+        &brief,
+        image.as_deref(),
+        candidates,
+        move |current, total, label| {
+            let _ = emitter.emit(
+                "studio://ai-progress",
+                serde_json::json!({ "current": current, "total": total, "label": label }),
+            );
+        },
+    )
+    .await
 }
 
 /// AI breakdown keys between two times of a clip. Takes the clip from the frontend

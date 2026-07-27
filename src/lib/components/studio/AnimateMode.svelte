@@ -6,6 +6,7 @@
    * reused, so the preview updates in tens of milliseconds.
    */
   import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import {
     commands,
     unwrap,
@@ -78,13 +79,20 @@
         error = e instanceof Error ? e.message : String(e);
       }
     })();
+    const unlisten = listen<{ current: number; total: number; label: string }>(
+      "studio://ai-progress",
+      (e) => (aiProg = { cur: e.payload.current, total: e.payload.total, label: e.payload.label }),
+    );
     let raf = 0;
     const tick = () => {
       drawGizmos();
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      unlisten.then((f) => f());
+    };
   });
 
   // ── Rebuild paths ────────────────────────────────────────────────────────────
@@ -349,6 +357,9 @@
     return out.filter((t) => t >= 0 && t <= dur);
   });
 
+  // Surface that a 2.5D turn / mesh-deform is baked into this symbol (discoverability).
+  const hasTurn = $derived(doc.clips.some((c) => c.timelines.some((t) => "slotDeform" in t.target)));
+
   // ── AI motion (Phase 6) ──────────────────────────────────────────────────────
   // Seeded ONCE from the motion brief written at the Cut step — the same plan the
   // parts were cut for; edits here stay local to the clip being drafted.
@@ -357,6 +368,8 @@
   let aiName = $state("");
   let aiBusy = $state(false);
   let aiMsg = $state("");
+  /** Live best-of-N progress from the backend (null while idle / single Draft). */
+  let aiProg = $state<{ cur: number; total: number; label: string } | null>(null);
   let aiStash = $state<{ id: string; json: string; existed: boolean } | null>(null);
   let ibFrom = $state(0);
   let ibTo = $state(0);
@@ -410,29 +423,33 @@
   async function draftClip() {
     const name = (aiName.trim() || clip?.name || "idle").trim();
     aiBusy = true;
-    aiMsg = `Drafting "${name}"…`;
+    aiProg = null; // single call → indeterminate spinner
+    aiMsg = `Drafting “${name}”…`;
     try {
       const result = await unwrap(commands.studioAiDraftClip(gameId, assetKey, name, aiBrief.trim()));
       applyDrafted(result);
-      aiMsg = `Drafted "${result.name}" — ${result.timelines.length} tracks. Refine or Revert.`;
+      aiMsg = `Drafted “${result.name}” — ${result.timelines.length} tracks. Refine or Revert.`;
     } catch (e) {
       aiMsg = e instanceof Error ? e.message : String(e);
     } finally {
       aiBusy = false;
+      aiProg = null;
     }
   }
   async function polishClip() {
     const name = (aiName.trim() || clip?.name || "idle").trim();
     aiBusy = true;
-    aiMsg = `Polishing "${name}" — drafting candidates + picking the best…`;
+    aiProg = null; // filled by studio://ai-progress step events
+    aiMsg = `Polishing “${name}”…`;
     try {
       const result = await unwrap(commands.studioAiPolishClip(gameId, assetKey, name, aiBrief.trim(), 3));
       applyDrafted(result);
-      aiMsg = `Polished "${result.name}" — best of 3, ${result.timelines.length} tracks. Refine or Revert.`;
+      aiMsg = `Polished “${result.name}” — best of 3, ${result.timelines.length} tracks. Refine or Revert.`;
     } catch (e) {
       aiMsg = e instanceof Error ? e.message : String(e);
     } finally {
       aiBusy = false;
+      aiProg = null;
     }
   }
 
@@ -534,6 +551,7 @@
         onpointerup={overlayUp}
       ></canvas>
       {#if error}<div class="stage-err">{error}</div>{/if}
+      {#if hasTurn}<span class="turn-chip" title="a 2.5D depth turn / mesh deform is baked in">2.5D turn · baked</span>{/if}
       {#if !playing}
         <span class="stage-hint muted tiny">
           click bone = select · drag tip = rotate · ⌘-drag = move · keys land at the playhead
@@ -645,46 +663,71 @@
   </div>
 
   <div class="ai-bar">
-    <span class="ai-glyph">✦</span>
-    <input
-      class="ai-name mono"
-      bind:value={aiName}
-      placeholder={clip?.name ?? "clip"}
-      title="target clip name (new or existing)"
-    />
-    <input
-      class="ai-brief"
-      bind:value={aiBrief}
-      placeholder="describe the motion… e.g. “breathes slowly, the axe glints, then a sharp win pop”"
-      onkeydown={(e) => e.key === "Enter" && !aiBusy && aiBrief.trim() && draftClip()}
-    />
-    <button onclick={draftClip} disabled={aiBusy || !aiBrief.trim()}>
-      {aiBusy ? "Working…" : "Draft clip"}
-    </button>
-    <button
-      class="polish"
-      title="Draft several candidates and let the AI critic pick the best (costs more)"
-      onclick={polishClip}
-      disabled={aiBusy || !aiBrief.trim()}
-    >
-      ✨ Polish
-    </button>
-    <span class="ai-sep"></span>
-    <label class="ai-ib tiny muted">
-      between
-      <input class="ai-num mono" type="number" step="0.1" min="0" bind:value={ibFrom} />
-      –
-      <input class="ai-num mono" type="number" step="0.1" min="0" bind:value={ibTo} />
-      s ×
-      <input class="ai-num mono" type="number" min="1" max="5" bind:value={ibCount} />
-    </label>
-    <button class="ghost" onclick={runInbetween} disabled={aiBusy || !clip || ibTo <= ibFrom}>
-      In-between
-    </button>
-    {#if aiStash}
-      <button class="ghost revert" onclick={undoAi} disabled={aiBusy}>Revert AI</button>
-    {/if}
-    {#if aiMsg}<span class="ai-msg tiny">{aiMsg}</span>{/if}
+    <div class="ai-top">
+      <span class="ai-glyph" title="AI motion director">✦</span>
+      <input
+        class="ai-name mono"
+        bind:value={aiName}
+        placeholder={clip?.name ?? "clip"}
+        title="target clip name (new or existing)"
+      />
+      <span class="ai-loop" title={clip?.looping === false ? "one-shot" : "looping"}>
+        {clip?.looping === false ? "▸" : "∞"}
+      </span>
+      <textarea
+        class="ai-brief"
+        rows="1"
+        bind:value={aiBrief}
+        placeholder="describe the motion… e.g. “body breathes, the axe glints, then a sharp win pop”"
+        onkeydown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey && !aiBusy && aiBrief.trim()) {
+            e.preventDefault();
+            draftClip();
+          }
+        }}
+      ></textarea>
+    </div>
+    <div class="ai-actions">
+      <button onclick={draftClip} disabled={aiBusy || !aiBrief.trim()}>Draft clip</button>
+      <button
+        class="polish"
+        title="Draft 3 candidates and let the AI critic pick the best — costs more"
+        onclick={polishClip}
+        disabled={aiBusy || !aiBrief.trim()}
+      >
+        ✦ Polish · best of 3
+      </button>
+      <span class="ai-sep"></span>
+      <label class="ai-ib tiny muted">
+        refine
+        <input class="ai-num mono" type="number" step="0.1" min="0" bind:value={ibFrom} />–<input
+          class="ai-num mono"
+          type="number"
+          step="0.1"
+          min="0"
+          bind:value={ibTo}
+        />s ×<input class="ai-num mono" type="number" min="1" max="5" bind:value={ibCount} />
+      </label>
+      <button class="ghost" onclick={runInbetween} disabled={aiBusy || !clip || ibTo <= ibFrom}>
+        In-between
+      </button>
+      {#if aiStash && !aiBusy}
+        <button class="ghost revert" onclick={undoAi}>Revert AI</button>
+      {/if}
+      <div class="ai-status">
+        {#if aiBusy}
+          <span class="spin"></span>
+          {#if aiProg}
+            <span class="pbar"><i style:width={`${(aiProg.cur / Math.max(1, aiProg.total)) * 100}%`}></i></span>
+            <span class="ai-msg tiny amber">{aiProg.label}</span>
+          {:else}
+            <span class="ai-msg tiny amber">{aiMsg}</span>
+          {/if}
+        {:else if aiMsg}
+          <span class="ai-msg tiny">{aiMsg}</span>
+        {/if}
+      </div>
+    </div>
   </div>
 
   <div class="lower">
@@ -736,6 +779,29 @@
     position: relative;
     min-width: 0;
     background: radial-gradient(ellipse at center, var(--wash-faint), transparent 70%);
+  }
+  .turn-chip {
+    position: absolute;
+    top: 0.6rem;
+    left: 0.6rem;
+    z-index: 4;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.62rem;
+    color: var(--gold);
+    background: var(--gold-glow);
+    border: 1px solid var(--gold-deep);
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    pointer-events: none;
+  }
+  .turn-chip::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: var(--gold);
   }
   .gizmos {
     position: absolute;
@@ -812,33 +878,60 @@
   }
   .ai-bar {
     display: flex;
-    align-items: center;
-    gap: 0.55rem;
-    padding: 0.4rem 0.9rem;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.5rem 0.9rem;
     border-top: 1px solid var(--line);
     flex: none;
   }
+  .ai-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
   .ai-glyph {
     color: var(--gold);
+    align-self: center;
   }
   .ai-name {
-    width: 90px;
+    width: 84px;
     font-size: 0.72rem;
+    align-self: stretch;
+  }
+  .ai-loop {
+    align-self: center;
+    color: var(--ash);
+    font-size: 0.85rem;
+    margin-left: -0.25rem;
   }
   .ai-brief {
     flex: 1;
     min-width: 0;
-    font-size: 0.75rem;
+    font-size: 0.78rem;
+    font-family: inherit;
+    resize: none;
+    line-height: 1.4;
+    min-height: 2.5rem;
+  }
+  .ai-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
   }
   .ai-sep {
     width: 1px;
     align-self: stretch;
     background: var(--line);
+    margin: 0 0.1rem;
   }
   .polish {
-    border-color: var(--amber, var(--gold));
-    color: var(--amber, var(--gold));
+    border-color: var(--gold-deep);
+    color: var(--gold);
     white-space: nowrap;
+  }
+  .polish:hover:not(:disabled) {
+    background: var(--gold-glow);
   }
   .ai-ib {
     display: flex;
@@ -848,18 +941,66 @@
     white-space: nowrap;
   }
   .ai-num {
-    width: 3.2rem;
+    width: 3rem;
     font-size: 0.72rem;
   }
   .revert:hover {
     color: var(--oxblood);
   }
+  .ai-status {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
   .ai-msg {
-    color: var(--lapis);
-    max-width: 260px;
+    color: var(--bone-dim);
+    max-width: 280px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .ai-msg.amber {
+    color: var(--gold);
+  }
+  .pbar {
+    width: 120px;
+    height: 5px;
+    border-radius: 999px;
+    background: var(--ink-4);
+    overflow: hidden;
+    display: inline-block;
+    flex: none;
+  }
+  .pbar > i {
+    display: block;
+    height: 100%;
+    background: var(--gold);
+    border-radius: 999px;
+    transition: width 0.3s ease;
+  }
+  .spin {
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    border: 2px solid var(--gold-glow);
+    border-top-color: var(--gold);
+    animation: spin 0.8s linear infinite;
+    flex: none;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spin {
+      animation: none;
+    }
+    .pbar > i {
+      transition: none;
+    }
   }
   .lower {
     height: 240px;

@@ -55,7 +55,6 @@
   let anchorOpen = $state(false);
   /** Bumped when the style anchor changes so the bench chip refreshes. */
   let anchorRev = $state(0);
-  let menuOpen = $state(false);
   let deliverOpen = $state(false);
   let contactOpen = $state(false);
   let setKeys = $state<string[] | null>(null);
@@ -394,6 +393,13 @@
     }
   }
 
+  // Contextual seed cue: surfaces when a meaningful number of assets have no brief
+  // (replaces the old overflow-menu entry). Dismissable per session.
+  let seedCueDismissed = $state(false);
+  const brieflessCount = $derived(
+    assets.filter((a) => a.production === "raster" && !assetStatus(records[a.key]).hasPrompt).length,
+  );
+
   let seeding = $state(false);
   async function seedAll() {
     if (!savedId) return;
@@ -412,7 +418,6 @@
   }
 
   function closeMenus() {
-    menuOpen = false;
     deliverOpen = false;
     legendOpen = false;
   }
@@ -500,28 +505,6 @@
             </div>
           {/if}
         </div>
-        <div class="menu-wrap">
-          <button
-            class="ghost"
-            onclick={(e) => {
-              e.stopPropagation();
-              menuOpen = !menuOpen;
-            }}
-          >
-            ⋯
-          </button>
-          {#if menuOpen}
-            <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-            <div class="menu card" onclick={(e) => e.stopPropagation()}>
-              <button class="mitem" onclick={() => { menuOpen = false; anchorOpen = true; }}>
-                Style anchor…
-              </button>
-              <button class="mitem" onclick={() => { menuOpen = false; seedAll(); }} disabled={seeding || batchBusy}>
-                Seed subjects from Blueprint
-              </button>
-            </div>
-          {/if}
-        </div>
       {/if}
     </div>
   </header>
@@ -529,6 +512,16 @@
   {#if error || deriveError || batchMsg || batchProg}
     <div class="banner" class:err={!!(error || deriveError)}>
       {error || deriveError || batchProg || batchMsg}
+    </div>
+  {/if}
+
+  {#if ready && savedId && brieflessCount >= 3 && !seedCueDismissed}
+    <div class="cue">
+      <span>{brieflessCount} assets have no brief yet — seed their subjects from the Blueprint descriptions.</span>
+      <button class="ghost tiny-btn" onclick={seedAll} disabled={seeding || batchBusy}>
+        {seeding ? "Seeding…" : "Seed subjects"}
+      </button>
+      <button class="cue-x" onclick={() => (seedCueDismissed = true)} title="dismiss">✕</button>
     </div>
   {/if}
 
@@ -562,7 +555,14 @@
         </div>
         {#if descriptor && isRaster}
           {#key descriptor.key}
-            <Bench gameId={savedId} asset={descriptor} {config} {anchorRev} onsaved={onBenchSaved} />
+            <Bench
+              gameId={savedId}
+              asset={descriptor}
+              {config}
+              {anchorRev}
+              onsaved={onBenchSaved}
+              onmanageanchor={() => (anchorOpen = true)}
+            />
           {/key}
         {:else if descriptor}
           <div class="hollow">
@@ -845,9 +845,6 @@
     right: 0;
     left: auto;
   }
-  .menu-wrap {
-    position: relative;
-  }
   .menu {
     position: absolute;
     top: calc(100% + 6px);
@@ -881,6 +878,31 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .cue {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.4rem 1.4rem;
+    font-size: 0.75rem;
+    color: var(--bone-dim);
+    background: var(--ink-2);
+    border-bottom: 1px solid var(--line);
+  }
+  .cue .tiny-btn {
+    font-size: 0.72rem;
+    padding: 0.2rem 0.6rem;
+  }
+  .cue-x {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--bone-dim);
+    cursor: pointer;
+    font-size: 0.7rem;
+  }
+  .cue-x:hover {
+    color: var(--bone);
   }
   .banner {
     padding: 0.4rem 1.2rem;

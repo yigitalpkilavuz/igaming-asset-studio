@@ -277,8 +277,10 @@ pub async fn draft_clip_polished(
     brief: &str,
     image: Option<&[u8]>,
     candidates: u32,
+    progress: impl Fn(u32, u32, &str),
 ) -> Result<Clip, String> {
     let n = candidates.clamp(2, 5) as usize;
+    let total = (n + 1) as u32; // n drafts + the critic pick
     let temps = [0.5, 0.9, 0.7, 0.6, 0.85];
     let user = format!(
         "Skeleton:\n{}\n\nClip name: {name}\nBrief: {brief}",
@@ -295,6 +297,7 @@ pub async fn draft_clip_polished(
 
     let mut clips: Vec<Clip> = Vec::new();
     for i in 0..n {
+        progress((i + 1) as u32, total, &format!("Drafting candidate {} of {n}…", i + 1));
         let Ok(content) =
             chat_json(api_key, super::motion_gen::PLAN_SYSTEM, &user, image, temps[i % temps.len()])
                 .await
@@ -320,6 +323,7 @@ pub async fn draft_clip_polished(
     if clips.len() == 1 {
         return Ok(clips.into_iter().next().unwrap());
     }
+    progress(total, total, "Scoring & picking the best…");
     let k = critic_pick(api_key, name, brief, image, &clips)
         .await
         .unwrap_or(0)

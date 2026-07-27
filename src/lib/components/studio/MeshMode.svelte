@@ -595,22 +595,10 @@
     gap: 0.4rem;
     color: var(--bone-dim);
   }
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-  }
-  .field input[type="range"] {
-    width: 100%;
-  }
   .grid2 {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 0.4rem;
-  }
-  .grid2 input {
-    width: 100%;
-    font-size: 0.75rem;
+    gap: 0.4rem 0.7rem;
   }
   .warn {
     color: var(--gold);
