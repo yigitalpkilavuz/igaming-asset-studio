@@ -76,6 +76,10 @@ pub struct Part {
     /// Which file feeds the atlas: the raw cut or the inpaint-completed texture.
     #[serde(default)]
     pub texture: PartTexture,
+    /// Floppy/continuous part (hair, cloak, cape, tail, cloth) — kept WHOLE by the cut and
+    /// auto-rigged as a mesh on a bone chain with sway physics, rather than a rigid quad.
+    #[serde(default)]
+    pub deformable: bool,
 }
 
 impl Part {
@@ -245,6 +249,8 @@ pub enum TimelineTarget {
     BoneScale(String),
     /// Absolute alpha 0..1 on a slot.
     SlotAlpha(String),
+    /// Absolute RGB tint 0..1 on a slot (win flashes, glows, near-miss tints). `v = [r, g, b]`.
+    SlotColor(String),
 }
 
 impl TimelineTarget {
@@ -253,6 +259,7 @@ impl TimelineTarget {
         match self {
             TimelineTarget::BoneRotate(_) | TimelineTarget::SlotAlpha(_) => 1,
             TimelineTarget::BoneTranslate(_) | TimelineTarget::BoneScale(_) => 2,
+            TimelineTarget::SlotColor(_) => 3,
         }
     }
 }
@@ -385,6 +392,7 @@ impl StudioDoc {
             completed_hash: None,
             completed_bbox: None,
             texture: PartTexture::Cut,
+            deformable: false,
         };
         let root = Bone::new("root", None, cx, cy);
         let body = Bone::new("body", Some("root".into()), cx, cy);

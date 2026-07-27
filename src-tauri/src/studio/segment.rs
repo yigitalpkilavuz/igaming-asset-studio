@@ -458,7 +458,8 @@ pub fn cut_parts(
             super::doc::TimelineTarget::BoneRotate(b)
             | super::doc::TimelineTarget::BoneTranslate(b)
             | super::doc::TimelineTarget::BoneScale(b) => bone_names.contains(&b.as_str()),
-            super::doc::TimelineTarget::SlotAlpha(s) => slot_names.contains(&s.as_str()),
+            super::doc::TimelineTarget::SlotAlpha(s)
+            | super::doc::TimelineTarget::SlotColor(s) => slot_names.contains(&s.as_str()),
         });
     }
     doc.clips.retain(|c| !c.timelines.is_empty());
@@ -574,6 +575,7 @@ mod tests {
             completed_hash: None,
             completed_bbox: None,
             texture: PartTexture::Cut,
+            deformable: false,
         };
         doc.parts = vec![mk("back"), mk("front")]; // front = higher index = on top
 

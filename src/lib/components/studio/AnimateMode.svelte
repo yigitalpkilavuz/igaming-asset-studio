@@ -48,6 +48,13 @@
   let playing = $state(false);
   let loop = $state(true);
   let onion = $state(false);
+  let speed = $state(1);
+  let curveComp = $state(0); // which value component's easing curve the editor shows
+  let keyClipboard: { v: number[]; curve: Curve } | null = null;
+  $effect(() => {
+    void selection; // reset the curve-component selector when the selected key changes
+    curveComp = 0;
+  });
   let selection = $state<{ t: number; k: number } | null>(null);
   let selectedBone = $state<string | null>(null);
 
@@ -197,18 +204,29 @@
     commit();
   }
 
-  function bezierHandles(): [number, number, number, number] {
+  function bezierHandles(comp: number): [number, number, number, number] {
     const c = selectedKey?.k.curve;
-    if (c && typeof c === "object" && "bezier" in c && c.bezier.length >= 4) {
-      return [c.bezier[0] ?? 0, c.bezier[1] ?? 0, c.bezier[2] ?? 1, c.bezier[3] ?? 1];
+    const o = comp * 4;
+    if (c && typeof c === "object" && "bezier" in c && c.bezier.length >= o + 4) {
+      return [c.bezier[o] ?? 0, c.bezier[o + 1] ?? 0, c.bezier[o + 2] ?? 1, c.bezier[o + 3] ?? 1];
     }
     return EASE;
   }
 
-  function setBezierHandles(h: [number, number, number, number]) {
+  /** Write one component's easing handles, leaving the other components' curves intact. */
+  function setBezierHandles(comp: number, h: [number, number, number, number]) {
     if (!selectedKey) return;
     const comps = selectedKey.k.v.length;
-    selectedKey.k.curve = { bezier: Array(comps).fill(h).flat() };
+    const c = selectedKey.k.curve;
+    const arr =
+      c && typeof c === "object" && "bezier" in c && c.bezier.length === comps * 4
+        ? c.bezier.map((x) => x ?? 0)
+        : (Array(comps).fill(EASE).flat() as number[]);
+    arr[comp * 4] = h[0];
+    arr[comp * 4 + 1] = h[1];
+    arr[comp * 4 + 2] = h[2];
+    arr[comp * 4 + 3] = h[3];
+    selectedKey.k.curve = { bezier: arr };
     commit();
   }
 
@@ -216,7 +234,22 @@
     if ("boneRotate" in target) return ["deg"];
     if ("boneTranslate" in target) return ["x px", "y px"];
     if ("boneScale" in target) return ["scale x", "scale y"];
+    if ("slotColor" in target) return ["r", "g", "b"];
     return ["alpha"];
+  }
+
+  /** Selected slot-color key ↔ a `#rrggbb` swatch (values are 0..1). */
+  function keyHex(v: (number | null)[]): string {
+    const b = (x: number | null) => Math.max(0, Math.min(255, Math.round((x ?? 0) * 255)));
+    return `#${[0, 1, 2].map((i) => b(v[i]).toString(16).padStart(2, "0")).join("")}`;
+  }
+  function setKeyColor(hex: string) {
+    if (!selectedKey) return;
+    const n = (s: string) => parseInt(s, 16) / 255;
+    selectedKey.k.v[0] = n(hex.slice(1, 3));
+    selectedKey.k.v[1] = n(hex.slice(3, 5));
+    selectedKey.k.v[2] = n(hex.slice(5, 7));
+    commit();
   }
 
   // ── Stage gizmos (shared math in poseDrag.ts) ────────────────────────────────
@@ -288,11 +321,24 @@
     setKey({ boneTranslate: b.name }, time, [round2(b.animX), round2(-b.animY)]);
   }
 
-  const onionTimes = $derived(
-    onion && !playing && clip
-      ? [time - 2 / fps, time + 2 / fps].filter((t) => t >= 0 && t <= (clip.duration ?? 2))
-      : [],
-  );
+  function renameClip(id: string, name: string) {
+    const c = doc.clips.find((x) => x.id === id);
+    if (!c || doc.clips.some((x) => x.id !== id && x.name === name)) return; // names stay unique
+    c.name = name;
+    doc.clips = [...doc.clips];
+    commit();
+  }
+
+  const onionTimes = $derived.by(() => {
+    if (!onion || playing || !clip) return [];
+    const before = Math.round(doc.settings?.onionBefore ?? 2);
+    const after = Math.round(doc.settings?.onionAfter ?? 2);
+    const dur = clip.duration ?? 2;
+    const out: number[] = [];
+    for (let i = before; i >= 1; i--) out.push(time - i / fps);
+    for (let i = 1; i <= after; i++) out.push(time + i / fps);
+    return out.filter((t) => t >= 0 && t <= dur);
+  });
 
   // ── AI motion (Phase 6) ──────────────────────────────────────────────────────
   // Seeded ONCE from the motion brief written at the Cut step — the same plan the
@@ -418,6 +464,23 @@
     } else if ((e.key === "Backspace" || e.key === "Delete") && selection) {
       e.preventDefault();
       deleteSelectedKey();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c" && selection && clip) {
+      e.preventDefault();
+      const k = clip.timelines[selection.t]?.keys[selection.k];
+      if (k) keyClipboard = { v: k.v.map((x) => x ?? 0), curve: k.curve ?? "linear" };
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v" && keyClipboard && selection && clip) {
+      // Paste the copied key onto the selected track at the playhead (matching arity).
+      e.preventDefault();
+      const tl = clip.timelines[selection.t];
+      if (tl && keyValueLabel(tl.target).length === keyClipboard.v.length) {
+        const t = snap(time);
+        tl.keys = tl.keys.filter((kk) => Math.abs((kk.time ?? 0) - t) > 1e-6);
+        const key: Key = { time: t, v: [...keyClipboard.v], curve: keyClipboard.curve };
+        tl.keys.push(key);
+        tl.keys.sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
+        selection = { t: selection.t, k: tl.keys.indexOf(key) };
+        commit();
+      }
     }
   }
 </script>
@@ -435,6 +498,7 @@
         {loop}
         time={playing ? null : time}
         {onionTimes}
+        {speed}
         onstatus={(s) => (error = s.error ?? "")}
         ontick={(t) => (time = t)}
       />
@@ -471,12 +535,23 @@
             }}
           />
         </label>
+        {#if "slotColor" in selectedKey.tl.target}
+          <label class="field">
+            <span class="muted tiny">tint (white = none)</span>
+            <input
+              class="swatch"
+              type="color"
+              value={keyHex(selectedKey.k.v)}
+              oninput={(e) => setKeyColor(e.currentTarget.value)}
+            />
+          </label>
+        {/if}
         {#each keyValueLabel(selectedKey.tl.target) as lbl, ci (lbl)}
           <label class="field">
             <span class="muted tiny">{lbl}</span>
             <input
               type="number"
-              step="0.1"
+              step={"slotColor" in selectedKey.tl.target ? 0.05 : 0.1}
               value={selectedKey.k.v[ci] ?? 0}
               onchange={(e) => {
                 selectedKey!.k.v[ci] = +e.currentTarget.value || 0;
@@ -494,7 +569,16 @@
           </select>
         </label>
         {#if curveKind(selectedKey.k.curve) === "bezier"}
-          <CurveEditor handles={bezierHandles()} onchange={setBezierHandles} />
+          {#if keyValueLabel(selectedKey.tl.target).length > 1}
+            <div class="curvecomps">
+              {#each keyValueLabel(selectedKey.tl.target) as lbl, ci (lbl)}
+                <button class="ccomp" class:on={curveComp === ci} onclick={() => (curveComp = ci)}>
+                  {lbl}
+                </button>
+              {/each}
+            </div>
+          {/if}
+          <CurveEditor handles={bezierHandles(curveComp)} onchange={(h) => setBezierHandles(curveComp, h)} />
         {/if}
         <button class="ghost danger" onclick={deleteSelectedKey}>Delete key</button>
       {:else if selectedBone}
@@ -555,6 +639,7 @@
       {playing}
       {loop}
       {onion}
+      {speed}
       {selection}
       onselectclip={(id) => {
         activeClipId = id;
@@ -563,6 +648,7 @@
       }}
       onaddclip={addClip}
       ondeleteclip={deleteClip}
+      onrenameclip={renameClip}
       onscrub={(t) => {
         time = t;
         playing = false;
@@ -570,6 +656,7 @@
       onplaytoggle={() => (playing = !playing)}
       onlooptoggle={() => (loop = !loop)}
       ononiontoggle={() => (onion = !onion)}
+      onspeed={(s) => (speed = s)}
       onselectkey={(s) => (selection = s)}
       onedit={commit}
     />
@@ -641,6 +728,28 @@
   .field select {
     font-size: 0.75rem;
     width: 100%;
+  }
+  .swatch {
+    height: 26px;
+    padding: 1px;
+    cursor: pointer;
+  }
+  .curvecomps {
+    display: flex;
+    gap: 0.25rem;
+  }
+  .ccomp {
+    flex: 1;
+    font-size: 0.66rem;
+    padding: 0.1rem 0.2rem;
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--ash);
+  }
+  .ccomp.on {
+    color: var(--gold-bright);
+    border-color: var(--gold-deep);
   }
   .danger:hover {
     color: var(--oxblood);

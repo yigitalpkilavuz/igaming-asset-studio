@@ -7,20 +7,26 @@ use image::RgbaImage;
 
 use super::doc::{BoneInfluence, MeshData, Rect, StudioDoc, VertexWeights};
 
-/// Grid cell target: ~8 cells across the long side, cells clamped to 12..64 px.
-fn grid_step(w: u32, h: u32) -> u32 {
-    (w.max(h) / 8).clamp(12, 64)
+/// Grid step for a target of `cells` across the long side, clamped to a sane pixel range.
+fn grid_step(w: u32, h: u32, cells: u32) -> u32 {
+    (w.max(h) / cells.max(1)).clamp(6, 96)
+}
+
+/// Build a grid mesh at the default detail (~8 cells across the long side).
+pub fn generate(tex: &RgbaImage, bbox: Rect) -> Option<MeshData> {
+    generate_cells(tex, bbox, 8)
 }
 
 /// Build a grid mesh over the texture's opaque region (dilated by one cell so the mesh
-/// covers antialiased edges). Vertices are SOURCE-pixel positions (bbox offset applied);
-/// UVs are 0..1 within the texture. Returns `None` for a fully transparent texture.
-pub fn generate(tex: &RgbaImage, bbox: Rect) -> Option<MeshData> {
+/// covers antialiased edges) at a target `cells` across the long side — the density knob.
+/// Vertices are SOURCE-pixel positions (bbox offset applied); UVs are 0..1 within the
+/// texture. Returns `None` for a fully transparent texture.
+pub fn generate_cells(tex: &RgbaImage, bbox: Rect, cells: u32) -> Option<MeshData> {
     let (tw, th) = tex.dimensions();
     if tw == 0 || th == 0 {
         return None;
     }
-    let step = grid_step(tw, th);
+    let step = grid_step(tw, th, cells);
     let cols = tw.div_ceil(step) as usize;
     let rows = th.div_ceil(step) as usize;
 

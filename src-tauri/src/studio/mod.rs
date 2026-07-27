@@ -13,6 +13,7 @@ pub mod matte;
 pub mod mesh;
 pub mod outline;
 pub mod motion;
+pub mod motion_gen;
 pub mod preview;
 pub mod regions;
 pub mod rig;

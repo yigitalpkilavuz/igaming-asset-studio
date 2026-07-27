@@ -198,6 +198,14 @@
   const meshEnabled = $derived(
     !!selectedSlot && typeof selectedSlot.attachment === "object" && "mesh" in selectedSlot.attachment,
   );
+  /** The selected part's mesh (for the wireframe overlay), or null when it's a rigid region. */
+  const selectedMesh = $derived.by(() => {
+    const a = selectedSlot?.attachment;
+    return a && typeof a === "object" && "mesh" in a ? a.mesh : null;
+  });
+  const selectedPart = $derived(
+    selectedSlot ? (doc.parts.find((p) => p.id === selectedSlot.partId) ?? null) : null,
+  );
   let meshBusy = $state(false);
 
   async function toggleMesh(enabled: boolean) {
@@ -206,7 +214,7 @@
     error = "";
     try {
       const updated = await unwrap(
-        commands.studioSetMesh(gameId, assetKey, selectedSlot.partId, enabled),
+        commands.studioSetMesh(gameId, assetKey, selectedSlot.partId, enabled, 0),
       );
       Object.assign(doc, updated);
       doc.slots = [...doc.slots];
@@ -314,6 +322,7 @@
           height={doc.source.height}
           tool="bones"
           bones={gizmoBones}
+          mesh={selectedMesh}
           onboneselect={(n) => (selected = n)}
           onbonechange={patchBone}
           onbonecommit={commit}
@@ -500,9 +509,17 @@
             />
             <span class="tiny">deformable mesh {meshBusy ? "…" : ""}</span>
           </label>
+          {#if selectedMesh}
+            <p class="muted tiny mesh-stat">
+              ∿ {selectedMesh.triangles.length / 3} triangles — vertices on the canvas are
+              tinted by the bone that moves them.
+            </p>
+          {/if}
           <p class="muted tiny">
-            Auto-weighted grid mesh — bends at the joint and along any chain bones. Re-tick
-            after re-cutting, filling hidden areas, or changing this part's bones.
+            {selectedPart?.deformable
+              ? "Marked deformable — auto-rigged as a waving mesh on its bone chain. "
+              : "Auto-weighted grid mesh — bends at the joint and along any chain bones. "}
+            Re-tick after re-cutting, filling hidden areas, or changing this part's bones.
           </p>
         {/if}
       {:else}

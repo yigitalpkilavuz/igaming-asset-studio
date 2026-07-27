@@ -438,7 +438,9 @@
       bbox: null,
       maskHash: null,
       completedHash: null,
+      completedBbox: null,
       texture: "cut",
+      deformable: false,
     };
   }
 
@@ -703,6 +705,13 @@
       onadd={addPart}
       ondelete={deletePart}
       onmove={movePart}
+      ondeformable={(id, value) => {
+        const p = doc.parts.find((x) => x.id === id);
+        if (!p) return;
+        p.deformable = value;
+        doc.parts = [...doc.parts];
+        persist();
+      }}
     />
     {#if selPart?.bbox && selPart?.maskHash}
       {@const ist = inpaintStates[selectedId ?? ""] ?? "clear"}

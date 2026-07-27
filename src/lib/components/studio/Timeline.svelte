@@ -13,14 +13,17 @@
     playing,
     loop,
     onion,
+    speed,
     selection,
     onselectclip,
     onaddclip,
     ondeleteclip,
+    onrenameclip,
     onscrub,
     onplaytoggle,
     onlooptoggle,
     ononiontoggle,
+    onspeed,
     onselectkey,
     onedit,
   }: {
@@ -30,14 +33,17 @@
     playing: boolean;
     loop: boolean;
     onion: boolean;
+    speed: number;
     selection: { t: number; k: number } | null;
     onselectclip: (id: string) => void;
     onaddclip: (name: string) => void;
     ondeleteclip: (id: string) => void;
+    onrenameclip: (id: string, name: string) => void;
     onscrub: (t: number) => void;
     onplaytoggle: () => void;
     onlooptoggle: () => void;
     ononiontoggle: () => void;
+    onspeed: (s: number) => void;
     onselectkey: (sel: { t: number; k: number } | null) => void;
     /** Any structural change to the clip (keys moved/added/removed, duration…). */
     onedit: () => void;
@@ -48,7 +54,14 @@
   let customName = $state("");
   let trackAddOpen = $state(false);
   let newBone = $state("");
-  let newChannel = $state<"rotate" | "translate" | "scale" | "alpha">("rotate");
+  let newChannel = $state<"rotate" | "translate" | "scale" | "alpha" | "color">("rotate");
+  let renaming = $state<string | null>(null);
+  let renameVal = $state("");
+
+  function commitRename(id: string) {
+    if (renameVal.trim()) onrenameclip(id, renameVal.trim());
+    renaming = null;
+  }
 
   let rowsEl = $state<HTMLDivElement | null>(null);
 
@@ -62,16 +75,19 @@
     if ("boneRotate" in t) return `${t.boneRotate} · rotate`;
     if ("boneTranslate" in t) return `${t.boneTranslate} · move`;
     if ("boneScale" in t) return `${t.boneScale} · scale`;
-    return `${(t as { slotAlpha: string }).slotAlpha} · alpha`;
+    if ("slotAlpha" in t) return `${t.slotAlpha} · alpha`;
+    return `${(t as { slotColor: string }).slotColor} · color`;
   }
 
   function components(t: TimelineTarget): number {
+    if ("slotColor" in t) return 3;
     return "boneTranslate" in t || "boneScale" in t ? 2 : 1;
   }
 
   function defaultValue(t: TimelineTarget): number[] {
     if ("boneScale" in t) return [1, 1];
     if ("boneTranslate" in t) return [0, 0];
+    if ("slotColor" in t) return [1, 1, 1]; // white = no tint
     if ("slotAlpha" in t) return [1];
     return [0];
   }
@@ -173,7 +189,9 @@
           ? { boneTranslate: newBone }
           : newChannel === "scale"
             ? { boneScale: newBone }
-            : { slotAlpha: newBone };
+            : newChannel === "alpha"
+              ? { slotAlpha: newBone }
+              : { slotColor: newBone };
     if (clip.timelines.some((tl) => JSON.stringify(tl.target) === JSON.stringify(target))) {
       trackAddOpen = false;
       return;
@@ -197,13 +215,27 @@
 <div class="timeline">
   <div class="clips-row">
     {#each doc.clips as c (c.id)}
-      <button
-        class="ctab mono"
-        class:on={clip?.id === c.id}
-        onclick={() => onselectclip(c.id)}
-      >
-        {c.name}
-      </button>
+      {#if renaming === c.id}
+        <form onsubmit={(e) => { e.preventDefault(); commitRename(c.id); }}>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            class="renameinput mono"
+            bind:value={renameVal}
+            autofocus
+            onblur={() => commitRename(c.id)}
+          />
+        </form>
+      {:else}
+        <button
+          class="ctab mono"
+          class:on={clip?.id === c.id}
+          onclick={() => onselectclip(c.id)}
+          ondblclick={() => { renaming = c.id; renameVal = c.name; }}
+          title="double-click to rename"
+        >
+          {c.name}
+        </button>
+      {/if}
     {/each}
     <div class="addwrap">
       <button class="ghost ctab" onclick={() => (addOpen = !addOpen)}>+</button>
@@ -265,6 +297,16 @@
     <span class="mono t">{time.toFixed(2)} / {duration.toFixed(2)}s</span>
     <label class="opt"><input type="checkbox" checked={loop} onchange={onlooptoggle} /><span class="tiny">loop</span></label>
     <label class="opt" title="onion skin: ghost the neighboring frames — red = past, green = future"><input type="checkbox" checked={onion} onchange={ononiontoggle} /><span class="tiny">onion</span></label>
+    <label class="opt tiny muted">
+      speed
+      <select class="speedsel" value={speed} onchange={(e) => onspeed(+e.currentTarget.value)}>
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1">1×</option>
+        <option value="1.5">1.5×</option>
+        <option value="2">2×</option>
+      </select>
+    </label>
     <span class="muted tiny mono">{fps} fps grid · alt-click lane = add key</span>
   </div>
 
@@ -310,10 +352,11 @@
             <option value="translate">translate</option>
             <option value="scale">scale</option>
             <option value="alpha">alpha (slot)</option>
+            <option value="color">color (slot)</option>
           </select>
           <select bind:value={newBone}>
             <option value="" disabled>target…</option>
-            {#each newChannel === "alpha" ? slotNames : boneNames as n (n)}
+            {#each newChannel === "alpha" || newChannel === "color" ? slotNames : boneNames as n (n)}
               <option value={n}>{n}</option>
             {/each}
           </select>
@@ -391,6 +434,13 @@
   .dur {
     width: 3.6rem;
     font-size: 0.72rem;
+  }
+  .renameinput {
+    font-size: 0.72rem;
+    width: 5.5rem;
+  }
+  .speedsel {
+    font-size: 0.66rem;
   }
   .playbar {
     display: flex;

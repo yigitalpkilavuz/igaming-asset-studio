@@ -215,6 +215,7 @@ mod tests {
                 completed_hash: None,
                 completed_bbox: None,
                 texture: PartTexture::Cut,
+                deformable: false,
             },
             Part {
                 id: "head".into(),
@@ -225,6 +226,7 @@ mod tests {
                 completed_hash: None,
                 completed_bbox: None,
                 texture: PartTexture::Cut,
+                deformable: false,
             },
         ];
         doc.bones = vec![

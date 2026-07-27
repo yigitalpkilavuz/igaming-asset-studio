@@ -54,51 +54,7 @@ Channels and value semantics (per key, `value` is an array):\n\
 - alpha: [0..1] slot opacity. Target = slot.\n\
 `ease` is the ease OUT of a key toward the next: linear | in | out | inOut | stepped.";
 
-const VOCABULARY: &str = "\
-Motion vocabulary to compose from (subtle by default — this is a slot symbol, not a cartoon):\n\
-breathe = slow torso/root scale 1.00→1.03 with inOut; sway = gentle rotate ±2–4° on a core \
-bone; tilt = head rotate ±5–10°; pulse = quick scale pop 1→1.05→1; bounce = translate y dip \
-with a slight squash (scale x up, y down) at the bottom; hover = slow translate y ±4–8; \
-swing = limb rotate ±8–25° hinging at its joint; shiver = fast small alternating rotates; \
-glow = slot alpha 0.65→1; flare = scale + alpha surge together; recoil = small opposite \
-motion before the main action (anticipation).";
-
-const PRINCIPLES: &str = "\
-Animation principles: ease in/out by default; arcs, anticipation and follow-through; \
-children lag their parents by 1–3 frames (offset key times slightly down the chain); \
-overshoot slightly then settle on dramatic actions; keep loops seamless (end pose = start \
-pose). Typical budget: 2–6 tracks, 3–5 keys per track.";
-
-// ── Draft contract ─────────────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-struct ClipDraft {
-    #[serde(default)]
-    duration: f64,
-    #[serde(default, alias = "loop")]
-    looping: Option<bool>,
-    #[serde(default)]
-    timelines: Vec<TrackDraft>,
-}
-#[derive(Deserialize)]
-struct TrackDraft {
-    #[serde(default)]
-    target: String,
-    #[serde(default)]
-    channel: String,
-    #[serde(default)]
-    keys: Vec<KeyDraft>,
-}
-#[derive(Deserialize)]
-struct KeyDraft {
-    #[serde(default)]
-    time: f64,
-    #[serde(default)]
-    value: Vec<f64>,
-    #[serde(default)]
-    ease: String,
-}
-
+/// Ease-name → curve, shared by the in-between path (the draft path uses `motion_gen`).
 fn ease_to_curve(ease: &str, comps: usize) -> Curve {
     let h: Option<[f64; 4]> = match ease {
         "in" => Some([0.42, 0.0, 1.0, 1.0]),
@@ -113,80 +69,10 @@ fn ease_to_curve(ease: &str, comps: usize) -> Curve {
     }
 }
 
-/// Validate/clamp a raw model draft into a safe [`Clip`].
-fn apply_clip_draft(
-    doc: &StudioDoc,
-    id: &str,
-    name: &str,
-    draft: ClipDraftInput,
-) -> Clip {
-    let duration = if draft.duration > 0.0 { draft.duration.clamp(0.3, 10.0) } else { 2.0 };
-    let looping = draft.looping;
-    let max_dim = doc.source.width.max(doc.source.height) as f64;
-    let translate_cap = max_dim * 0.15;
-
-    let bone_ok = |n: &str| doc.bones.iter().any(|b| b.name == n);
-    let slot_ok = |n: &str| doc.slots.iter().any(|s| s.name == n);
-
-    let mut timelines: Vec<Timeline> = Vec::new();
-    for track in draft.timelines.into_iter().take(24) {
-        let target = match track.channel.as_str() {
-            "rotate" if bone_ok(&track.target) => TimelineTarget::BoneRotate(track.target.clone()),
-            "translate" if bone_ok(&track.target) => {
-                TimelineTarget::BoneTranslate(track.target.clone())
-            }
-            "scale" if bone_ok(&track.target) => TimelineTarget::BoneScale(track.target.clone()),
-            "alpha" if slot_ok(&track.target) => TimelineTarget::SlotAlpha(track.target.clone()),
-            _ => continue, // unknown target/channel — dropped
-        };
-        // Don't duplicate a track that already made it in.
-        if timelines
-            .iter()
-            .any(|tl| tl.target == target)
-        {
-            continue;
-        }
-        let comps = target.components();
-        let mut keys: Vec<Key> = Vec::new();
-        for k in track.keys.into_iter().take(12) {
-            let time = (k.time).clamp(0.0, duration);
-            let mut v: Vec<f64> = (0..comps)
-                .map(|i| k.value.get(i).copied().unwrap_or_else(|| default_component(&target, i)))
-                .collect();
-            clamp_values(&target, &mut v, translate_cap);
-            let curve = ease_to_curve(k.ease.as_str(), comps);
-            // Dedupe on identical (snapped-ish) times: last write wins.
-            if let Some(existing) = keys.iter_mut().find(|e| (e.time - time).abs() < 1e-3) {
-                existing.v = v;
-                existing.curve = curve;
-            } else {
-                keys.push(Key { time, v, curve });
-            }
-        }
-        if keys.is_empty() {
-            continue;
-        }
-        keys.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
-        if looping {
-            close_loop(&mut keys, duration);
-        }
-        timelines.push(Timeline { target, keys });
-    }
-
-    Clip { id: id.to_string(), name: name.to_string(), duration, looping, timelines }
-}
-
-/// A normalized draft input (what both the AI path and tests feed the clamp).
-struct ClipDraftInput {
-    duration: f64,
-    looping: bool,
-    timelines: Vec<TrackDraft>,
-}
-
 fn default_component(target: &TimelineTarget, _i: usize) -> f64 {
     match target {
         TimelineTarget::BoneScale(_) => 1.0,
-        TimelineTarget::SlotAlpha(_) => 1.0,
+        TimelineTarget::SlotAlpha(_) | TimelineTarget::SlotColor(_) => 1.0, // full / white
         _ => 0.0,
     }
 }
@@ -209,17 +95,11 @@ fn clamp_values(target: &TimelineTarget, v: &mut [f64], translate_cap: f64) {
         TimelineTarget::SlotAlpha(_) => {
             v[0] = v[0].clamp(0.0, 1.0);
         }
-    }
-}
-
-/// Seamless loop: the track's final pose must equal its first.
-fn close_loop(keys: &mut Vec<Key>, duration: f64) {
-    let Some(first) = keys.first().cloned() else { return };
-    match keys.last_mut() {
-        Some(last) if (last.time - duration).abs() < 1e-3 => {
-            last.v = first.v;
+        TimelineTarget::SlotColor(_) => {
+            for c in v.iter_mut() {
+                *c = c.clamp(0.0, 1.0);
+            }
         }
-        _ => keys.push(Key { time: duration, v: first.v, curve: Curve::Linear }),
     }
 }
 
@@ -270,30 +150,22 @@ async fn chat_json(api_key: &str, system: &str, user: &str) -> Result<String, St
         .ok_or_else(|| "no choices".to_string())
 }
 
-/// Draft a whole clip from a text brief.
+/// Draft a whole clip from a text brief. The model DIRECTS — it assigns a motion primitive
+/// to each bone/slot — and `motion_gen` renders clean, seamlessly-looping keyframes. (LLMs
+/// can't hand-key believable motion; assigning primitives is the reliable half.)
 pub async fn draft_clip(
     api_key: &str,
     doc: &StudioDoc,
     name: &str,
     brief: &str,
 ) -> Result<Clip, String> {
-    let system = format!(
-        "You are a senior 2D character animator keyframing a Spine skeleton for a premium \
-dark-fantasy slot game symbol. You receive the skeleton and a motion brief; you output a \
-keyframe clip as JSON.\n\n{CHANNEL_SEMANTICS}\n\n{VOCABULARY}\n\n{PRINCIPLES}\n\n\
-Output ONLY this JSON object:\n\
-{{\"duration\": seconds, \"loop\": boolean, \"timelines\": [{{\"target\": \"boneOrSlotName\", \
-\"channel\": \"rotate\"|\"translate\"|\"scale\"|\"alpha\", \"keys\": [{{\"time\": seconds, \
-\"value\": [numbers], \"ease\": \"linear\"|\"in\"|\"out\"|\"inOut\"|\"stepped\"}}]}}]}}"
-    );
     let user = format!(
         "Skeleton:\n{}\n\nClip name: {name}\nBrief: {brief}",
         skeleton_summary(doc)
     );
-    let content = chat_json(api_key, &system, &user).await?;
-    let draft: ClipDraft =
-        serde_json::from_str(&content).map_err(|e| format!("could not parse motion draft: {e}"))?;
-    let looping = draft.looping.unwrap_or(true);
+    let content = chat_json(api_key, super::motion_gen::PLAN_SYSTEM, &user).await?;
+    let plan: super::motion_gen::PlanDraft =
+        serde_json::from_str(&content).map_err(|e| format!("could not parse motion plan: {e}"))?;
     let slug: String = name
         .to_lowercase()
         .chars()
@@ -302,14 +174,9 @@ Output ONLY this JSON object:\n\
         .trim_matches('_')
         .to_string();
     let id = if slug.is_empty() { "clip".to_string() } else { slug };
-    let clip = apply_clip_draft(
-        doc,
-        &id,
-        name,
-        ClipDraftInput { duration: draft.duration, looping, timelines: draft.timelines },
-    );
+    let clip = super::motion_gen::render_plan(doc, &id, name, plan);
     if clip.timelines.is_empty() {
-        return Err("the model produced no usable tracks — try rephrasing the brief".into());
+        return Err("the model assigned no usable motion — try a more specific brief".into());
     }
     Ok(clip)
 }
@@ -348,6 +215,7 @@ fn target_parts(t: &TimelineTarget) -> (&str, &'static str) {
         TimelineTarget::BoneTranslate(b) => (b, "translate"),
         TimelineTarget::BoneScale(b) => (b, "scale"),
         TimelineTarget::SlotAlpha(s) => (s, "alpha"),
+        TimelineTarget::SlotColor(s) => (s, "color"),
     }
 }
 
@@ -468,104 +336,22 @@ mod tests {
         d
     }
 
-    fn track(target: &str, channel: &str, keys: Vec<(f64, Vec<f64>, &str)>) -> TrackDraft {
-        TrackDraft {
-            target: target.into(),
-            channel: channel.into(),
-            keys: keys
-                .into_iter()
-                .map(|(time, value, ease)| KeyDraft { time, value, ease: ease.into() })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn clamp_drops_unknown_targets_and_bounds_values() {
-        let d = doc();
-        let clip = apply_clip_draft(
-            &d,
-            "win",
-            "win",
-            ClipDraftInput {
-                duration: 3.0,
-                looping: false,
-                timelines: vec![
-                    track("head", "rotate", vec![(0.0, vec![0.0], "inOut"), (1.5, vec![900.0], "out"), (99.0, vec![-10.0], "linear")]),
-                    track("ghost_bone", "rotate", vec![(0.0, vec![5.0], "linear")]),
-                    track("all", "alpha", vec![(0.0, vec![2.5], "linear")]),
-                    track("head", "scale", vec![(0.0, vec![5.0, 0.01], "in")]),
-                ],
-            },
-        );
-        assert_eq!(clip.timelines.len(), 3); // ghost_bone dropped
-        let rot = &clip.timelines[0];
-        assert!(matches!(&rot.target, TimelineTarget::BoneRotate(b) if b == "head"));
-        assert_eq!(rot.keys[1].v[0], 60.0); // ±60 clamp
-        assert_eq!(rot.keys[2].time, 3.0); // time clamped to duration
-        let alpha = &clip.timelines[1];
-        assert_eq!(alpha.keys[0].v[0], 1.0); // alpha 0..1
-        let scale = &clip.timelines[2];
-        assert_eq!(scale.keys[0].v, vec![1.4, 0.7]); // scale clamp
-        // Ease mapping produced bezier out-curves where a next key exists.
-        assert!(matches!(rot.keys[0].curve, Curve::Bezier(_)));
-    }
-
-    #[test]
-    fn loop_closure_appends_or_overwrites_final_key() {
-        let d = doc();
-        let clip = apply_clip_draft(
-            &d,
-            "idle",
-            "idle",
-            ClipDraftInput {
-                duration: 2.0,
-                looping: true,
-                timelines: vec![
-                    track("head", "rotate", vec![(0.0, vec![3.0], "inOut"), (1.0, vec![-3.0], "inOut")]),
-                    track("body", "scale", vec![(0.0, vec![1.0, 1.0], "inOut"), (2.0, vec![1.2, 1.2], "linear")]),
-                ],
-            },
-        );
-        // Track 1: last key appended at duration with the first value.
-        let rot = &clip.timelines[0];
-        assert_eq!(rot.keys.len(), 3);
-        assert_eq!(rot.keys[2].time, 2.0);
-        assert_eq!(rot.keys[2].v, vec![3.0]);
-        // Track 2: existing key AT duration gets overwritten to the first value.
-        let sc = &clip.timelines[1];
-        assert_eq!(sc.keys.len(), 2);
-        assert_eq!(sc.keys[1].v, vec![1.0, 1.0]);
-    }
-
-    #[test]
-    fn translate_cap_scales_with_canvas() {
-        let d = doc(); // max dim 1000 → cap 150
-        let clip = apply_clip_draft(
-            &d,
-            "c",
-            "c",
-            ClipDraftInput {
-                duration: 1.0,
-                looping: false,
-                timelines: vec![track("head", "translate", vec![(0.0, vec![9999.0, -9999.0], "linear")])],
-            },
-        );
-        assert_eq!(clip.timelines[0].keys[0].v, vec![150.0, -150.0]);
-    }
-
     #[test]
     fn inbetweens_insert_only_inside_interval_into_existing_tracks() {
         let d = doc();
-        let base = apply_clip_draft(
-            &d,
-            "win",
-            "win",
-            ClipDraftInput {
-                duration: 2.0,
-                looping: false,
-                timelines: vec![track("head", "rotate", vec![(0.0, vec![0.0], "inOut"), (2.0, vec![30.0], "linear")])],
-            },
-        );
+        let base = Clip {
+            id: "win".into(),
+            name: "win".into(),
+            duration: 2.0,
+            looping: false,
+            timelines: vec![Timeline {
+                target: TimelineTarget::BoneRotate("head".into()),
+                keys: vec![
+                    Key { time: 0.0, v: vec![0.0], curve: Curve::Linear },
+                    Key { time: 2.0, v: vec![30.0], curve: Curve::Linear },
+                ],
+            }],
+        };
         let updated = apply_inbetweens(
             &d,
             &base,
@@ -585,6 +371,114 @@ mod tests {
         // Original endpoints untouched.
         assert_eq!(keys[0].time, 0.0);
         assert_eq!(keys[3].v, vec![30.0]);
+    }
+
+    /// End-to-end: real masks → heuristic rig → REAL OpenAI draft → engine → keyframes.
+    /// Prints the directed plan and graphs each track's value curve (smoothness + loop
+    /// closure). Env-gated; makes ONE paid call. Run:
+    ///   WF_STUDIO=/…/studio WF_OUT=/…/out cargo test --lib \
+    ///     studio::motion::tests::draft_end_to_end -- --nocapture
+    #[test]
+    fn draft_end_to_end() {
+        let (Some(studio), Some(out)) =
+            (std::env::var_os("WF_STUDIO"), std::env::var_os("WF_OUT"))
+        else {
+            return;
+        };
+        let studio = std::path::PathBuf::from(studio);
+        let out = std::path::PathBuf::from(out);
+        std::fs::create_dir_all(&out).unwrap();
+        let brief = std::env::var("WF_BRIEF").unwrap_or_else(|_| {
+            "a gentle idle: the whole symbol breathes, the head bobs, limbs and any cape sway \
+             softly, small bright parts glint"
+                .into()
+        });
+
+        let mut doc: StudioDoc =
+            serde_json::from_slice(&std::fs::read(studio.join("studio.json")).unwrap()).unwrap();
+        // Real rig from the masks (heuristic tree — no AI needed for the rig itself).
+        let mut masks = Vec::new();
+        for p in &doc.parts {
+            if let Ok(m) = image::open(studio.join("parts").join(&p.id).join("mask.png")) {
+                masks.push((p.id.clone(), m.to_luma8()));
+            }
+        }
+        let analysis = crate::studio::rig::analyze(&masks).unwrap();
+        let tree = crate::studio::rig::heuristic_tree(&analysis);
+        doc = crate::studio::rig::apply(doc, &analysis, &tree);
+        if doc.slots.is_empty() {
+            doc.slots = doc
+                .parts
+                .iter()
+                .map(|p| crate::studio::doc::Slot {
+                    name: p.id.clone(),
+                    bone: p.id.clone(),
+                    part_id: p.id.clone(),
+                    attachment: Default::default(),
+                    blend: Default::default(),
+                })
+                .collect();
+        }
+
+        let api_key = crate::secrets::get(crate::secrets::OPENAI_KEY)
+            .unwrap()
+            .filter(|k| !k.is_empty())
+            .expect("no OpenAI key in the dev secret store");
+        let clip = tauri::async_runtime::block_on(draft_clip(&api_key, &doc, "idle", &brief)).unwrap();
+
+        eprintln!(
+            "=== plan → clip \"{}\"  dur={:.2}s  loop={}  ({} tracks) ===",
+            clip.name, clip.duration, clip.looping, clip.timelines.len()
+        );
+        for tl in &clip.timelines {
+            let (t, ch) = target_parts(&tl.target);
+            let first = tl.keys.first().map(|k| k.v.clone()).unwrap_or_default();
+            let last = tl.keys.last().map(|k| k.v.clone()).unwrap_or_default();
+            let closed = first.iter().zip(&last).all(|(a, b)| (a - b).abs() < 1e-6);
+            eprintln!("  {t:>16} · {ch:<9} {:>2} keys  loop-closed={closed}", tl.keys.len());
+        }
+
+        // Graph each track's value curve — clean waves/ramps and start==end confirm quality.
+        fn line(img: &mut image::RgbaImage, x0: f64, y0: f64, x1: f64, y1: f64, c: [u8; 3]) {
+            let (w, h) = img.dimensions();
+            let steps = ((x1 - x0).abs().max((y1 - y0).abs())).ceil() as i32 + 1;
+            for i in 0..=steps {
+                let f = i as f64 / steps.max(1) as f64;
+                let (x, y) = ((x0 + (x1 - x0) * f) as i32, (y0 + (y1 - y0) * f) as i32);
+                if x >= 0 && y >= 0 && (x as u32) < w && (y as u32) < h {
+                    img.put_pixel(x as u32, y as u32, image::Rgba([c[0], c[1], c[2], 255]));
+                }
+            }
+        }
+        let rows = clip.timelines.len().max(1) as u32;
+        let (w, rh) = (360u32, 64u32);
+        let mut img = image::RgbaImage::from_pixel(w, rh * rows, image::Rgba([18, 19, 23, 255]));
+        let n = 120usize;
+        for (i, tl) in clip.timelines.iter().enumerate() {
+            let y0 = i as u32 * rh;
+            for x in 0..w {
+                img.put_pixel(x, y0, image::Rgba([40, 41, 46, 255])); // row separator
+            }
+            let samples: Vec<Vec<f64>> =
+                (0..=n).map(|s| value_at(tl, clip.duration * s as f64 / n as f64)).collect();
+            for c in 0..tl.target.components() {
+                let vals: Vec<f64> = samples.iter().map(|s| s[c]).collect();
+                let (lo, hi) = vals.iter().fold((f64::MAX, f64::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+                let span = (hi - lo).max(1e-6);
+                let col = [[230, 120, 120], [120, 200, 230], [130, 220, 150]][c % 3];
+                let mut prev: Option<(f64, f64)> = None;
+                for (s, &v) in vals.iter().enumerate() {
+                    let x = s as f64 / n as f64 * (w - 1) as f64;
+                    let y = y0 as f64 + rh as f64 - 6.0 - (v - lo) / span * (rh as f64 - 12.0);
+                    if let Some((px, py)) = prev {
+                        line(&mut img, px, py, x, y, col);
+                    }
+                    prev = Some((x, y));
+                }
+            }
+        }
+        image::DynamicImage::ImageRgba8(img).save(out.join("motion_curves.png")).unwrap();
+        eprintln!("wrote {}/motion_curves.png", out.display());
     }
 
     #[test]

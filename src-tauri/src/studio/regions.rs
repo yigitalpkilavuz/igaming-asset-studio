@@ -27,6 +27,8 @@ pub struct LabeledPart {
     pub id: String,
     pub name: String,
     pub region_ids: Vec<u32>,
+    /// Floppy/continuous (hair, cloak, tail…) → keep whole, mesh + chain + sway downstream.
+    pub deformable: bool,
 }
 
 /// Target region count for the partition the labeler reads — far fewer than the old
@@ -940,6 +942,11 @@ joints — head/neck, torso, and each limb broken into upper arm / forearm / han
 shin / foot (NOT one rigid arm or leg), so elbow, knee and wrist can move. An object or \
 emblem splits into its main body PLUS each ornament that dangles, sways, glints or swings on \
 its own — a plume, chain, charm, gem or hinged lid.\n\
+- MARK a part deformable when it is a FLOPPY, CONTINUOUS surface that bends and flows as a \
+whole instead of hinging at joints — hair, a cloak or cape, a tail, a scarf, cloth or a \
+skirt, a flag, a beard, dangling ribbons or chains. A deformable part is still its OWN part, \
+but keep it WHOLE — do NOT chop it into segments (it becomes one mesh on a bone chain that \
+waves). Rigid things — limbs, plates, props, shields, gems — are not deformable.\n\
 - MERGE what always moves together: fragments of one surface, decorations painted ON a \
 piece, patterns, engravings, texture and tiny slivers all belong to the piece they sit on; \
 a face's features are not parts. Two regions that never move relative to each other are one \
@@ -955,7 +962,7 @@ everything the motion never separates.\n\
 the part it mostly belongs to).\n\
 - Order parts BACKGROUND-most first, FOREGROUND-most last.\n\
 - Each part: a short lowercase slug id (a-z, 0-9, underscore) and a display name.\n\
-Output ONLY JSON: {\"parts\":[{\"id\":string,\"name\":string,\"regions\":[numbers]}]}";
+Output ONLY JSON: {\"parts\":[{\"id\":string,\"name\":string,\"deformable\":boolean,\"regions\":[numbers]}]}";
 
 #[derive(Deserialize)]
 struct LabelDraft {
@@ -968,6 +975,8 @@ struct LabelPartDraft {
     id: String,
     #[serde(default)]
     name: String,
+    #[serde(default)]
+    deformable: bool,
     #[serde(default)]
     regions: Vec<u32>,
 }
@@ -1029,7 +1038,7 @@ fn clamp_labels(draft: LabelDraft, region_count: usize) -> Vec<LabeledPart> {
         }
         let name = if p.name.trim().is_empty() { id.clone() } else { p.name.trim().to_string() };
         seen_ids.push(id.clone());
-        out.push(LabeledPart { id, name, region_ids: regions });
+        out.push(LabeledPart { id, name, deformable: p.deformable, region_ids: regions });
         // Cap headroom for a fully-jointed character (head + torso + 2 arms×3 + 2 legs×3 =
         // 15); the subject-adaptive prompt decides the actual count below this.
         if out.len() >= 16 {
@@ -1315,17 +1324,19 @@ mod tests {
     fn clamp_dedupes_ids_and_region_claims() {
         let draft = LabelDraft {
             parts: vec![
-                LabelPartDraft { id: "head".into(), name: "Head".into(), regions: vec![1, 2] },
-                LabelPartDraft { id: "head".into(), name: "Head 2".into(), regions: vec![2, 3] },
-                LabelPartDraft { id: "".into(), name: "".into(), regions: vec![4] },
-                LabelPartDraft { id: "ghost".into(), name: "Ghost".into(), regions: vec![99] },
+                LabelPartDraft { id: "hair".into(), name: "Hair".into(), deformable: true, regions: vec![1, 2] },
+                LabelPartDraft { id: "hair".into(), name: "Hair 2".into(), deformable: false, regions: vec![2, 3] },
+                LabelPartDraft { id: "".into(), name: "".into(), deformable: false, regions: vec![4] },
+                LabelPartDraft { id: "ghost".into(), name: "Ghost".into(), deformable: false, regions: vec![99] },
             ],
         };
         let out = clamp_labels(draft, 5);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].id, "head");
+        assert_eq!(out[0].id, "hair");
         assert_eq!(out[0].region_ids, vec![1, 2]);
-        assert_eq!(out[1].id, "head_2");
+        assert!(out[0].deformable, "deformable flag carries through");
+        assert_eq!(out[1].id, "hair_2");
+        assert!(!out[1].deformable);
         assert_eq!(out[1].region_ids, vec![3], "region 2 already claimed; 99 out of range");
     }
 

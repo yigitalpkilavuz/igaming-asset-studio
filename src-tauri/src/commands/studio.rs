@@ -338,7 +338,7 @@ pub async fn studio_auto_cut(
         // Resolve to (id, name, raw mask). Labeled path: union each part's regions, then
         // repair connectivity ACROSS parts (stray fragments move to the neighbour they
         // touch). Fallback path (labeler failed/empty): one part per discovered region.
-        let named: Vec<(String, String, image::GrayImage)> = if !labeled.is_empty() {
+        let named: Vec<(String, String, bool, image::GrayImage)> = if !labeled.is_empty() {
             let mut raw_masks: Vec<(String, image::GrayImage)> = labeled
                 .iter()
                 .map(|lp| (lp.id.clone(), regions::part_mask(&regions, &lp.region_ids)))
@@ -347,17 +347,17 @@ pub async fn studio_auto_cut(
             raw_masks
                 .into_iter()
                 .enumerate()
-                .map(|(i, (id, m))| (id, labeled[i].name.clone(), m))
+                .map(|(i, (id, m))| (id, labeled[i].name.clone(), labeled[i].deformable, m))
                 .collect()
         } else {
             regions
                 .iter()
-                .map(|r| (format!("part_{}", r.id), format!("Part {}", r.id), r.mask.clone()))
+                .map(|r| (format!("part_{}", r.id), format!("Part {}", r.id), false, r.mask.clone()))
                 .collect()
         };
 
         let mut parts = Vec::new();
-        for (id, name, raw) in &named {
+        for (id, name, deformable, raw) in &named {
             let mask = regions::polish_mask(raw, &rgb, &alpha_img);
             if segment::mask_bbox(&mask).is_none() {
                 continue;
@@ -380,6 +380,7 @@ pub async fn studio_auto_cut(
                 completed_hash: None,
                 completed_bbox: None,
                 texture: crate::studio::doc::PartTexture::Cut,
+                deformable: *deformable,
             });
         }
         if parts.is_empty() {
@@ -865,6 +866,34 @@ pub async fn studio_auto_rig(
     };
 
     doc = rig::apply(doc, &analysis, &tree);
+
+    // Deformable parts (hair/cloak/tail) auto-become meshes bound along the bone chain
+    // apply() just laid down, so they wave with its sway physics — hands-off. A vertex near
+    // the attachment blends toward the parent bone (seam bows); the rest follows the chain.
+    let deformable_ids: Vec<String> =
+        doc.parts.iter().filter(|p| p.deformable).map(|p| p.id.clone()).collect();
+    for part_id in deformable_ids {
+        let Some(slot_idx) = doc.slots.iter().position(|s| s.part_id == part_id) else {
+            continue;
+        };
+        let Some(part) = doc.part(&part_id) else { continue };
+        let Some(bbox) = part.effective_bbox() else { continue };
+        let tex_path = store::part_texture_path(&base, &game_id, &asset_key, part);
+        let own_bone = doc.slots[slot_idx].bone.clone();
+        let mesh_data = tauri::async_runtime::spawn_blocking(move || {
+            let tex = image::open(&tex_path)
+                .map_err(|e| format!("open part texture: {e}"))?
+                .to_rgba8();
+            Ok::<_, String>(mesh::generate(&tex, bbox))
+        })
+        .await
+        .map_err(|e| format!("mesh task failed: {e}"))??;
+        if let Some(mut mesh_data) = mesh_data {
+            mesh_data.weights = mesh::auto_weights(&doc, &own_bone, &mesh_data);
+            doc.slots[slot_idx].attachment = Attachment::Mesh(mesh_data);
+        }
+    }
+
     doc.updated_at = now_ms();
     store::write_doc(&base, &game_id, &asset_key, &doc)?;
     Ok(doc)
@@ -1077,6 +1106,8 @@ pub async fn studio_set_mesh(
     asset_key: String,
     part_id: String,
     enabled: bool,
+    // Target grid cells across the long side (density); 0 = default (~8).
+    cells: u32,
 ) -> Result<StudioDoc, String> {
     let base = projects_root(&app)?;
     let mut doc = store::read_doc(&base, &game_id, &asset_key)?
@@ -1098,11 +1129,12 @@ pub async fn studio_set_mesh(
             .ok_or_else(|| format!("part \"{part_id}\" has no texture yet"))?;
         let tex_path = store::part_texture_path(&base, &game_id, &asset_key, part);
         let own_bone = doc.slots[slot_idx].bone.clone();
+        let detail = if cells == 0 { 8 } else { cells.clamp(3, 20) };
         let mesh_data = tauri::async_runtime::spawn_blocking(move || {
             let tex = image::open(&tex_path)
                 .map_err(|e| format!("open part texture: {e}"))?
                 .to_rgba8();
-            mesh::generate(&tex, bbox).ok_or_else(|| "part texture is empty".to_string())
+            mesh::generate_cells(&tex, bbox, detail).ok_or_else(|| "part texture is empty".to_string())
         })
         .await
         .map_err(|e| format!("mesh task failed: {e}"))??;
@@ -1279,6 +1311,7 @@ pub async fn studio_generate_fx(
         completed_hash: None,
         completed_bbox: None,
         texture: crate::studio::doc::PartTexture::Cut,
+        deformable: false, // FX light layers are rigid quads
     });
     doc.bones.push(crate::studio::doc::Bone::new(
         id.clone(),

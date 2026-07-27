@@ -8,14 +8,16 @@
   import { goProducer } from "$lib/stores/app.svelte";
   import AnimateMode from "./AnimateMode.svelte";
   import CutMode from "./CutMode.svelte";
+  import MeshMode from "./MeshMode.svelte";
   import RigMode from "./RigMode.svelte";
 
   let { gameId, assetKey }: { gameId: string; assetKey: string } = $props();
 
-  type Mode = "cut" | "rig" | "animate";
+  type Mode = "cut" | "rig" | "mesh" | "animate";
   const MODES: { key: Mode; label: string }[] = [
     { key: "cut", label: "Cut" },
     { key: "rig", label: "Rig" },
+    { key: "mesh", label: "Mesh" },
     { key: "animate", label: "Animate" },
   ];
 
@@ -183,6 +185,10 @@
       {:else if mode === "rig"}
         {#key `${doc.parts.length}:${doc.source.sha256}`}
           <RigMode {gameId} {assetKey} {doc} save={saveDoc} />
+        {/key}
+      {:else if mode === "mesh"}
+        {#key `${doc.parts.length}:${doc.source.sha256}`}
+          <MeshMode {gameId} {assetKey} {doc} save={saveDoc} />
         {/key}
       {:else}
         {#key animRev}

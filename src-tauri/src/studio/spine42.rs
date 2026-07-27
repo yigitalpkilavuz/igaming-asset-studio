@@ -334,6 +334,12 @@ fn emit_clip(clip: &super::doc::Clip) -> Result<Value, String> {
                     .unwrap()
                     .insert("alpha".into(), keys_json);
             }
+            TimelineTarget::SlotColor(s) => {
+                let entry = slots
+                    .entry(s.clone())
+                    .or_insert_with(|| Value::Object(Map::new()));
+                entry.as_object_mut().unwrap().insert("rgb".into(), keys_json);
+            }
         }
     }
 
@@ -370,6 +376,15 @@ fn emit_keys(keys: &[Key], comps: usize, target: &TimelineTarget) -> Result<Valu
             }
             TimelineTarget::SlotAlpha(_) => {
                 obj.insert("value".into(), json!(round4(k.v[0].clamp(0.0, 1.0) as f64)));
+            }
+            TimelineTarget::SlotColor(_) => {
+                // Spine 4.2 rgb timeline key: colour as an "rrggbb" hex string; the bezier
+                // curve (below) carries per-channel easing in 0..1 value space.
+                let byte = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                obj.insert(
+                    "color".into(),
+                    json!(format!("{:02x}{:02x}{:02x}", byte(k.v[0]), byte(k.v[1]), byte(k.v[2]))),
+                );
             }
             TimelineTarget::BoneTranslate(_) => {
                 obj.insert("x".into(), json!(round4(k.v[0] as f64)));
@@ -600,6 +615,29 @@ mod tests {
             .unwrap();
         assert_eq!(keys[1]["x"], json!(10.0));
         assert_eq!(keys[1]["y"], json!(-20.0)); // y-down doc → y-up spine
+    }
+
+    #[test]
+    fn slot_color_emits_rgb_hex_timeline() {
+        let mut doc = StudioDoc::seed(source(), 0.0);
+        doc.clips = vec![Clip {
+            id: "c".into(),
+            name: "c".into(),
+            duration: 1.0,
+            looping: false,
+            timelines: vec![Timeline {
+                target: TimelineTarget::SlotColor("all".into()),
+                keys: vec![
+                    Key { time: 0.0, v: vec![1.0, 1.0, 1.0], curve: Curve::Stepped },
+                    Key { time: 0.5, v: vec![1.0, 0.5, 0.0], curve: Curve::Linear },
+                ],
+            }],
+        }];
+        let v = emit(&doc).unwrap();
+        let keys = v["animations"]["c"]["slots"]["all"]["rgb"].as_array().unwrap();
+        assert_eq!(keys[0]["color"], json!("ffffff"), "white = no tint");
+        assert_eq!(keys[0]["curve"], json!("stepped"));
+        assert_eq!(keys[1]["color"], json!("ff8000"), "255,128,0 orange"); // round(0.5*255)=128
     }
 
     #[test]

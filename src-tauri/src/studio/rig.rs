@@ -376,6 +376,7 @@ pub fn apply(mut doc: StudioDoc, analysis: &RigAnalysis, tree: &HashMap<String, 
 
     let (cx, cy) = (doc.source.width as f64 / 2.0, doc.source.height as f64 / 2.0);
     let mut bones = vec![Bone::new("root", None, cx, cy)];
+    let mut sway_bones: Vec<String> = Vec::new(); // deformable chain segments → sway physics
 
     // Emit parts parents-first so the doc stays topologically ordered.
     let mut emitted: Vec<&str> = vec!["root"];
@@ -399,21 +400,50 @@ pub fn apply(mut doc: StudioDoc, analysis: &RigAnalysis, tree: &HashMap<String, 
                     .copied()
                     .unwrap_or(g.centroid)
             };
-            let mut bone = Bone::new(part.id.clone(), Some(parent.to_string()), px, py);
-            if g.aspect >= ELONGATED {
-                // Aim down the principal axis, away from the pivot toward the mass.
-                let to_mass = (g.centroid.0 - px, g.centroid.1 - py);
-                let mut axis = g.axis;
-                if axis.0 * to_mass.0 + axis.1 * to_mass.1 < 0.0 {
-                    axis = (-axis.0, -axis.1);
+            // Principal axis, oriented from the pivot toward the part's mass.
+            let to_mass = (g.centroid.0 - px, g.centroid.1 - py);
+            let mut axis = g.axis;
+            if axis.0 * to_mass.0 + axis.1 * to_mass.1 < 0.0 {
+                axis = (-axis.0, -axis.1);
+            }
+            let theta = (-axis.1).atan2(axis.0).to_degrees(); // y-down axis → Spine CCW
+            let along = (g.centroid.0 - px) * axis.0 + (g.centroid.1 - py) * axis.1;
+            let length = (along + g.extent).max(g.extent * 0.5).round();
+
+            if part.deformable {
+                // Deformable (hair/cloak/tail): a CHAIN of segment bones down the axis. The
+                // slot bone (part.id) is the chain root at the attachment; seg2..segN hang
+                // below and get sway physics; the mesh's auto-weights bind vertices along the
+                // whole chain, so it waves as one continuous surface instead of cracking.
+                let n = (g.aspect.round() as i64).clamp(2, 5) as usize;
+                let seg = (length / n as f64).max(1.0);
+                let r = theta.to_radians();
+                let (dx, dy) = (r.cos() * seg, -r.sin() * seg);
+                let (mut bx, mut by) = (px, py);
+                let mut prev = parent.to_string();
+                for k in 1..=n {
+                    let name = if k == 1 { part.id.clone() } else { format!("{}_seg{k}", part.id) };
+                    let mut b = Bone::new(name.clone(), Some(prev), bx, by);
+                    b.rotation = theta;
+                    b.length = seg;
+                    bones.push(b);
+                    if k >= 2 {
+                        sway_bones.push(name.clone());
+                    }
+                    prev = name;
+                    bx += dx;
+                    by += dy;
                 }
-                // y-down axis → Spine CCW degrees.
-                bone.rotation = (-axis.1).atan2(axis.0).to_degrees();
-                let along = (g.centroid.0 - px) * axis.0 + (g.centroid.1 - py) * axis.1;
-                bone.length = (along + g.extent).max(g.extent * 0.5).round();
+            } else {
+                let mut bone = Bone::new(part.id.clone(), Some(parent.to_string()), px, py);
+                if g.aspect >= ELONGATED {
+                    // Aim down the principal axis with a real length: limbs bend from the joint.
+                    bone.rotation = theta;
+                    bone.length = length;
+                }
+                bones.push(bone);
             }
             emitted.push(part.id.as_str());
-            bones.push(bone);
             false
         });
         if remaining.len() == before {
@@ -427,6 +457,15 @@ pub fn apply(mut doc: StudioDoc, analysis: &RigAnalysis, tree: &HashMap<String, 
     }
 
     doc.bones = bones;
+    // Sway physics on the deformable chain segments; preserve any user physics whose bone
+    // still exists after the rebuild.
+    let bone_names: Vec<String> = doc.bones.iter().map(|b| b.name.clone()).collect();
+    doc.physics.retain(|p| bone_names.contains(&p.bone));
+    for name in sway_bones {
+        if !doc.physics.iter().any(|p| p.bone == name) {
+            doc.physics.push(super::doc::PhysicsSpec::sway(name));
+        }
+    }
     doc
 }
 
@@ -483,11 +522,11 @@ mod tests {
         doc.parts = vec![
             crate::studio::doc::Part {
                 id: "torso".into(), name: "torso".into(), prompts: vec![], bbox: None,
-                mask_hash: None, completed_hash: None, completed_bbox: None, texture: Default::default(),
+                mask_hash: None, completed_hash: None, completed_bbox: None, texture: Default::default(), deformable: false,
             },
             crate::studio::doc::Part {
                 id: "arm".into(), name: "arm".into(), prompts: vec![], bbox: None,
-                mask_hash: None, completed_hash: None, completed_bbox: None, texture: Default::default(),
+                mask_hash: None, completed_hash: None, completed_bbox: None, texture: Default::default(), deformable: false,
             },
         ];
         let doc = apply(doc, &a, &tree);
@@ -503,6 +542,201 @@ mod tests {
         let torso = doc.bones.iter().find(|b| b.name == "torso").unwrap();
         assert_eq!(torso.parent.as_deref(), Some("root"));
         assert_eq!(torso.rotation, 0.0);
+    }
+
+    #[test]
+    fn deformable_part_gets_bone_chain_and_sway_physics() {
+        let a = analyze(&masks()).unwrap();
+        let tree = heuristic_tree(&a);
+        let mut doc = StudioDoc::seed(
+            SourceRef { variation_id: "v".into(), width: 400, height: 300, sha256: "s".into() },
+            0.0,
+        );
+        let mk = |id: &str, deformable: bool| crate::studio::doc::Part {
+            id: id.into(), name: id.into(), prompts: vec![], bbox: None,
+            mask_hash: None, completed_hash: None, completed_bbox: None,
+            texture: Default::default(), deformable,
+        };
+        // The elongated "arm" stands in for a floppy tail/cape.
+        doc.parts = vec![mk("torso", false), mk("arm", true)];
+        let doc = apply(doc, &a, &tree);
+
+        // The deformable part became a CHAIN (root + ≥1 segment), each hanging off the last.
+        let chain: Vec<&str> = doc
+            .bones
+            .iter()
+            .map(|b| b.name.as_str())
+            .filter(|n| *n == "arm" || n.starts_with("arm_seg"))
+            .collect();
+        assert!(chain.len() >= 2, "deformable part became a chain: {chain:?}");
+        let seg2 = doc.bones.iter().find(|b| b.name == "arm_seg2").expect("has seg2");
+        assert_eq!(seg2.parent.as_deref(), Some("arm"), "chain segment hangs off the root");
+        // Sway physics on the segments, NOT the keyframe-controllable root.
+        assert!(doc.physics.iter().any(|p| p.bone == "arm_seg2"), "segment sways");
+        assert!(!doc.physics.iter().any(|p| p.bone == "arm"), "root is not physics-driven");
+        // The rigid torso stays a single bone with no physics.
+        assert_eq!(doc.bones.iter().filter(|b| b.name.starts_with("torso")).count(), 1);
+        assert!(doc.physics.iter().all(|p| p.bone != "torso"));
+    }
+
+    /// Headless dump of auto-rig on a real asset with chosen parts marked deformable, to see
+    /// the bone chains on real geometry (no API). Env-gated. Run:
+    ///   WF_STUDIO=/…/studio WF_DEFORM=hair WF_OUT=/…/out \
+    ///     cargo test --lib studio::rig::tests::autorig_deformable_dump -- --nocapture
+    #[test]
+    fn autorig_deformable_dump() {
+        let (Some(studio), Some(out)) =
+            (std::env::var_os("WF_STUDIO"), std::env::var_os("WF_OUT"))
+        else {
+            return;
+        };
+        let studio = std::path::PathBuf::from(studio);
+        let out = std::path::PathBuf::from(out);
+        std::fs::create_dir_all(&out).unwrap();
+        let deform: std::collections::HashSet<String> = std::env::var("WF_DEFORM")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let mut doc: crate::studio::doc::StudioDoc =
+            serde_json::from_slice(&std::fs::read(studio.join("studio.json")).unwrap()).unwrap();
+        let src = image::open(studio.join("source.png")).unwrap().to_rgba8();
+        let (w, h) = src.dimensions();
+
+        let mut masks = Vec::new();
+        for p in &mut doc.parts {
+            if deform.contains(&p.id) {
+                p.deformable = true;
+            }
+            if let Ok(m) = image::open(studio.join("parts").join(&p.id).join("mask.png")) {
+                masks.push((p.id.clone(), m.to_luma8()));
+            }
+        }
+        let analysis = analyze(&masks).unwrap();
+        let tree = heuristic_tree(&analysis);
+        let doc = apply(doc, &analysis, &tree);
+
+        for p in doc.parts.iter().filter(|p| p.deformable) {
+            let seg_prefix = format!("{}_seg", p.id);
+            let chain: Vec<&str> = doc
+                .bones
+                .iter()
+                .map(|b| b.name.as_str())
+                .filter(|n| *n == p.id || n.starts_with(&seg_prefix))
+                .collect();
+            let sway: Vec<&str> = doc
+                .physics
+                .iter()
+                .map(|s| s.bone.as_str())
+                .filter(|b| chain.contains(b))
+                .collect();
+            eprintln!("deformable {}: chain={chain:?} sway={sway:?}", p.id);
+        }
+
+        fn stroke(img: &mut image::RgbaImage, x0: f64, y0: f64, x1: f64, y1: f64, col: [u8; 3]) {
+            let (w, h) = img.dimensions();
+            let steps = ((x1 - x0).abs().max((y1 - y0).abs())).ceil() as i32 + 1;
+            for i in 0..=steps {
+                let t = i as f64 / steps.max(1) as f64;
+                let (x, y) = ((x0 + (x1 - x0) * t) as i32, (y0 + (y1 - y0) * t) as i32);
+                for dy in -1..=1i32 {
+                    for dx in -1..=1i32 {
+                        let (px, py) = (x + dx, y + dy);
+                        if px >= 0 && py >= 0 && (px as u32) < w && (py as u32) < h {
+                            img.put_pixel(px as u32, py as u32, image::Rgba([col[0], col[1], col[2], 255]));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut img = image::RgbaImage::new(w, h);
+        for (x, y, p) in src.enumerate_pixels() {
+            let a = p.0[3] as u32;
+            let bl = |c: u8| (((c as u32 * a + 120 * (255 - a)) / 255) / 2 + 40) as u8;
+            img.put_pixel(x, y, image::Rgba([bl(p.0[0]), bl(p.0[1]), bl(p.0[2]), 255]));
+        }
+
+        // Deformable meshes: generate + auto-weight, then draw the triangle grid with
+        // vertices tinted by their dominant bone — exactly the EditCanvas overlay.
+        const VPAL: [[u8; 3]; 6] = [
+            [230, 90, 90], [90, 170, 230], [110, 210, 130],
+            [235, 185, 70], [190, 110, 225], [70, 210, 210],
+        ];
+        let bone_idx = |name: &str| -> usize {
+            let mut h: usize = 0;
+            for c in name.bytes() {
+                h = h.wrapping_mul(31).wrapping_add(c as usize);
+            }
+            h % VPAL.len()
+        };
+        for p in doc.parts.iter().filter(|p| p.deformable) {
+            let Some(m) = masks.iter().find(|(id, _)| id == &p.id).map(|(_, m)| m) else { continue };
+            let Some(bbox) = crate::studio::matte::mask_bbox(m) else { continue };
+            let mut cut = image::RgbaImage::new(bbox.w, bbox.h);
+            for cy in 0..bbox.h {
+                for cx in 0..bbox.w {
+                    let (sx, sy) = (bbox.x as u32 + cx, bbox.y as u32 + cy);
+                    if m.get_pixel(sx, sy).0[0] > 127 {
+                        cut.put_pixel(cx, cy, *src.get_pixel(sx, sy));
+                    }
+                }
+            }
+            let Some(mut mesh) = crate::studio::mesh::generate(&cut, bbox) else { continue };
+            mesh.weights = crate::studio::mesh::auto_weights(&doc, &p.id, &mesh);
+            let v = &mesh.vertices;
+            for t in mesh.triangles.chunks(3) {
+                if t.len() < 3 {
+                    continue;
+                }
+                for k in 0..3 {
+                    let (a, b) = (t[k] as usize, t[(k + 1) % 3] as usize);
+                    stroke(&mut img, v[a * 2], v[a * 2 + 1], v[b * 2], v[b * 2 + 1], [70, 150, 180]);
+                }
+            }
+            if let Some(ws) = &mesh.weights {
+                for (i, vw) in ws.iter().enumerate() {
+                    let col = vw
+                        .influences
+                        .iter()
+                        .max_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap())
+                        .map(|inf| VPAL[bone_idx(&inf.bone)])
+                        .unwrap_or([96, 200, 230]);
+                    let (vx, vy) = (v[i * 2] as i32, v[i * 2 + 1] as i32);
+                    for dy in -2..=2i32 {
+                        for dx in -2..=2i32 {
+                            let (px, py) = (vx + dx, vy + dy);
+                            if px >= 0 && py >= 0 && (px as u32) < w && (py as u32) < h {
+                                img.put_pixel(px as u32, py as u32, image::Rgba([col[0], col[1], col[2], 255]));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let sway_bones: std::collections::HashSet<&str> =
+            doc.physics.iter().map(|s| s.bone.as_str()).collect();
+        for b in &doc.bones {
+            let r = b.rotation.to_radians();
+            let (tx, ty) = (b.x + r.cos() * b.length, b.y - r.sin() * b.length);
+            // Cyan = sway (deformable chain segment), amber = rigid bone.
+            let col = if sway_bones.contains(b.name.as_str()) { [60, 220, 255] } else { [235, 180, 60] };
+            if b.length > 0.0 {
+                stroke(&mut img, b.x, b.y, tx, ty, col);
+            }
+            for dy in -3..=3i32 {
+                for dx in -3..=3i32 {
+                    let (px, py) = (b.x as i32 + dx, b.y as i32 + dy);
+                    if px >= 0 && py >= 0 && (px as u32) < w && (py as u32) < h {
+                        img.put_pixel(px as u32, py as u32, image::Rgba([255, 255, 255, 255]));
+                    }
+                }
+            }
+        }
+        image::DynamicImage::ImageRgba8(img).save(out.join("autorig.png")).unwrap();
+        eprintln!("wrote {}/autorig.png", out.display());
     }
 
     #[test]

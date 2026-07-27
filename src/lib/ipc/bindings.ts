@@ -320,7 +320,7 @@ export const commands = {
 	 *  (re)generates the mesh from the part's CURRENT texture, so re-running after an inpaint
 	 *  or recut refreshes it.
 	 */
-	studioSetMesh: (gameId: string, assetKey: string, partId: string, enabled: boolean) => typedError<StudioDoc, string>(__TAURI_INVOKE("studio_set_mesh", { gameId, assetKey, partId, enabled })),
+	studioSetMesh: (gameId: string, assetKey: string, partId: string, enabled: boolean, cells: number) => typedError<StudioDoc, string>(__TAURI_INVOKE("studio_set_mesh", { gameId, assetKey, partId, enabled, cells })),
 	/**
 	 *  Save baked clip frames (PNG data URLs from the real runtime) as a spritesheet +
 	 *  metadata under `studio/export/sheets/` — the fallback for non-Spine consumers.
@@ -955,6 +955,11 @@ export type Part = {
 	completedBbox?: Rect | null,
 	/**  Which file feeds the atlas: the raw cut or the inpaint-completed texture. */
 	texture?: PartTexture,
+	/**
+	 *  Floppy/continuous part (hair, cloak, cape, tail, cloth) — kept WHOLE by the cut and
+	 *  auto-rigged as a mesh on a bone chain with sway physics, rather than a rigid quad.
+	 */
+	deformable?: boolean,
 };
 
 export type PartProposal = {
@@ -1465,13 +1470,15 @@ export type Timeline = {
 
 export type TimelineTarget = 
 /**  Degrees, offset from setup pose. */
-({ boneRotate: string }) & { boneScale?: never; boneTranslate?: never; slotAlpha?: never } | 
+({ boneRotate: string }) & { boneScale?: never; boneTranslate?: never; slotAlpha?: never; slotColor?: never } | 
 /**  Pixels (source scale), offset from setup pose. `v = [x, y]`. */
-({ boneTranslate: string }) & { boneRotate?: never; boneScale?: never; slotAlpha?: never } | 
+({ boneTranslate: string }) & { boneRotate?: never; boneScale?: never; slotAlpha?: never; slotColor?: never } | 
 /**  Multiplier of setup scale. `v = [x, y]`. */
-({ boneScale: string }) & { boneRotate?: never; boneTranslate?: never; slotAlpha?: never } | 
+({ boneScale: string }) & { boneRotate?: never; boneTranslate?: never; slotAlpha?: never; slotColor?: never } | 
 /**  Absolute alpha 0..1 on a slot. */
-({ slotAlpha: string }) & { boneRotate?: never; boneScale?: never; boneTranslate?: never };
+({ slotAlpha: string }) & { boneRotate?: never; boneScale?: never; boneTranslate?: never; slotColor?: never } | 
+/**  Absolute RGB tint 0..1 on a slot (win flashes, glows, near-miss tints). `v = [r, g, b]`. */
+({ slotColor: string }) & { boneRotate?: never; boneScale?: never; boneTranslate?: never; slotAlpha?: never };
 
 /**
  *  A tonal band: where an asset's median HSV value (median of max(r,g,b) over

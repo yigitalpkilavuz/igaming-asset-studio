@@ -601,6 +601,7 @@ mod tests {
             completed_hash: None,
             completed_bbox: None,
             texture: PartTexture::Cut,
+            deformable: false,
         };
         let back_bbox = Rect { x: 0, y: 0, w: 40, h: 80 }; // claimed pixels (front took overlap)
         doc.parts = vec![
@@ -669,5 +670,155 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Headless dump of the "Fill hidden" ZONES for a real cut/selected asset — no API call
+    /// (the zone is pure geometry). Tints each part's fill band over the dimmed source so we
+    /// can see whether the bands hug the seams and skip the free ends. Env-gated. Run:
+    ///   WF_STUDIO=/…/assets/<key>/studio WF_OUT=/…/out \
+    ///     cargo test --lib studio::inpaint::tests::fill_zones_dump -- --nocapture
+    #[test]
+    fn fill_zones_dump() {
+        let (Some(studio), Some(out)) =
+            (std::env::var_os("WF_STUDIO"), std::env::var_os("WF_OUT"))
+        else {
+            return;
+        };
+        let studio = std::path::PathBuf::from(studio);
+        let out = std::path::PathBuf::from(out);
+        std::fs::create_dir_all(&out).unwrap();
+        let doc: StudioDoc =
+            serde_json::from_slice(&std::fs::read(studio.join("studio.json")).unwrap()).unwrap();
+        let source = image::open(studio.join("source.png")).unwrap().to_rgba8();
+        let (w, h) = source.dimensions();
+
+        let load = |id: &str| -> Option<GrayImage> {
+            image::open(studio.join("parts").join(id).join("mask.png"))
+                .ok()
+                .map(|i| i.to_luma8())
+        };
+        let masks: std::collections::HashMap<String, GrayImage> = doc
+            .parts
+            .iter()
+            .filter_map(|p| load(&p.id).map(|m| (p.id.clone(), m)))
+            .collect();
+
+        const PAL: [[u8; 3]; 8] = [
+            [230, 80, 80], [80, 160, 230], [90, 200, 120], [235, 180, 60],
+            [180, 100, 220], [70, 200, 200], [235, 120, 40], [200, 210, 70],
+        ];
+        let mut img = RgbaImage::new(w, h);
+        for (x, y, p) in source.enumerate_pixels() {
+            let a = p.0[3] as u32;
+            let bl = |c: u8| (((c as u32 * a + 120 * (255 - a)) / 255) / 2 + 40) as u8;
+            img.put_pixel(x, y, image::Rgba([bl(p.0[0]), bl(p.0[1]), bl(p.0[2]), 255]));
+        }
+        for (idx, part) in doc.parts.iter().enumerate() {
+            let Some(own) = masks.get(&part.id) else { continue };
+            // Post-cut bbox isn't set on a not-yet-cut doc — take it from the mask itself.
+            let Some(bbox) = part.bbox.or_else(|| matte::mask_bbox(own)) else { continue };
+            let r = band_radius(&doc, bbox);
+            let above: Vec<&GrayImage> = doc
+                .parts
+                .iter()
+                .skip(idx + 1)
+                .filter_map(|p| masks.get(&p.id))
+                .collect();
+            let col = PAL[idx % PAL.len()];
+            match compute_zone(own, &above, r) {
+                Some(zone) => {
+                    let zpx = zone.pixels().filter(|p| p.0[0] > 127).count();
+                    eprintln!("  {:<16} zone={:>6}px r={:>2} above={}", part.id, zpx, r, above.len());
+                    for (x, y, z) in zone.enumerate_pixels() {
+                        if z.0[0] > 127 {
+                            let p = img.get_pixel_mut(x, y);
+                            for c in 0..3 {
+                                p.0[c] = ((p.0[c] as u32 * 20 + col[c] as u32 * 80) / 100) as u8;
+                            }
+                        }
+                    }
+                }
+                None => eprintln!("  {:<16} NO ZONE (r={} above={})", part.id, r, above.len()),
+            }
+        }
+        image::DynamicImage::ImageRgba8(img)
+            .save(out.join("fill_zones.png"))
+            .unwrap();
+        eprintln!("wrote {}/fill_zones.png", out.display());
+    }
+
+    /// End-to-end fill on ONE occluded part with the REAL gpt-image-2 call, to inspect what
+    /// it actually paints (not just the zone). Reads masks read-only; writes only to WF_OUT;
+    /// makes ONE paid API call. Env-gated. Run:
+    ///   WF_STUDIO=/…/studio WF_PART=body WF_OUT=/…/out \
+    ///     cargo test --lib studio::inpaint::tests::fill_run_real -- --nocapture
+    #[test]
+    fn fill_run_real() {
+        let (Some(studio), Some(out)) =
+            (std::env::var_os("WF_STUDIO"), std::env::var_os("WF_OUT"))
+        else {
+            return;
+        };
+        let part_id = std::env::var("WF_PART").unwrap_or_else(|_| "body".into());
+        let studio = std::path::PathBuf::from(studio);
+        let out = std::path::PathBuf::from(out);
+        std::fs::create_dir_all(&out).unwrap();
+        let doc: StudioDoc =
+            serde_json::from_slice(&std::fs::read(studio.join("studio.json")).unwrap()).unwrap();
+        let source = image::open(studio.join("source.png")).unwrap().to_rgba8();
+        let load = |id: &str| {
+            image::open(studio.join("parts").join(id).join("mask.png"))
+                .unwrap()
+                .to_luma8()
+        };
+
+        let idx = doc.parts.iter().position(|p| p.id == part_id).expect("part not in doc");
+        let own = load(&part_id);
+        let above: Vec<GrayImage> = doc.parts.iter().skip(idx + 1).map(|p| load(&p.id)).collect();
+        let above_refs: Vec<&GrayImage> = above.iter().collect();
+        let bbox = matte::mask_bbox(&own).expect("empty mask");
+        let radius = band_radius(&doc, bbox);
+
+        // Build the part's cut texture = source pixels where its mask is set, cropped.
+        let mut cut = RgbaImage::new(bbox.w, bbox.h);
+        for y in 0..bbox.h {
+            for x in 0..bbox.w {
+                let (sx, sy) = (bbox.x as u32 + x, bbox.y as u32 + y);
+                if own.get_pixel(sx, sy).0[0] > 127 {
+                    cut.put_pixel(x, y, *source.get_pixel(sx, sy));
+                }
+            }
+        }
+        image::DynamicImage::ImageRgba8(cut.clone())
+            .save(out.join(format!("{part_id}_cut.png")))
+            .unwrap();
+
+        let hash_extra: Vec<u8> = Vec::new();
+        let spec = FillSpec {
+            own_mask: &own,
+            above_masks: &above_refs,
+            cut: &cut,
+            cut_bbox: bbox,
+            radius,
+            prompt: inpaint_prompt(&part_id),
+            hash_extra: &hash_extra,
+        };
+        let job = plan_fill(&part_id, &spec).unwrap().expect("part is not occluded → nothing to fill");
+        eprintln!(
+            "part={part_id} radius={radius} zone={}px crop={:?}",
+            job.zone.pixels().filter(|p| p.0[0] > 127).count(),
+            job.crop
+        );
+
+        let api_key = crate::secrets::get(crate::secrets::OPENAI_KEY)
+            .unwrap()
+            .filter(|k| !k.is_empty())
+            .expect("no OpenAI key in the dev secret store");
+        let (completed, cbb) =
+            tauri::async_runtime::block_on(execute_fill(&api_key, &job, &cut, bbox)).unwrap();
+        image::DynamicImage::ImageRgba8(completed)
+            .save(out.join(format!("{part_id}_filled.png")))
+            .unwrap();
+        eprintln!("wrote {part_id}_cut.png + {part_id}_filled.png; filled bbox={cbb:?}");
     }
 }

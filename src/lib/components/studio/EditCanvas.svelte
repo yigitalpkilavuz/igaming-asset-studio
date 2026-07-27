@@ -14,6 +14,18 @@
     active: boolean;
   };
 
+  /** A deformable mesh to draw over its part (rig mode): triangle grid + weighted vertices.
+   *  Number fields are nullable to match the generated `MeshData` (specta emits f64 as
+   *  `number | null`); real data is always finite. */
+  export type MeshOverlay = {
+    /** Source-pixel positions, 2 per vertex. */
+    vertices: (number | null)[];
+    /** 3 indices per triangle. */
+    triangles: number[];
+    /** Per-vertex bone influences; vertices are tinted by their dominant bone. */
+    weights?: { influences: { bone: string; weight: number | null }[] }[] | null;
+  };
+
   /** A bone drawn/edited by the gizmo layer (world source-px coords, Spine-CCW degrees). */
   export type GizmoBone = {
     name: string;
@@ -35,6 +47,7 @@
     brushSize = 24,
     bones = [],
     outline = null,
+    mesh = null,
     onpoint,
     onpointremove,
     onmaskedit,
@@ -56,6 +69,8 @@
     bones?: GizmoBone[];
     /** Outline tool: editable closed rings in image px (outer boundaries + holes). */
     outline?: [number, number][][] | null;
+    /** Rig mode: the selected part's deformable mesh, drawn as a weighted wireframe. */
+    mesh?: MeshOverlay | null;
     onpoint?: (x: number, y: number, positive: boolean) => void;
     /** Point mode: delete a prompt dot — `index` of the clicked dot, or -1 for the
      *  most recent one (right-click on empty space = undo last). */
@@ -307,6 +322,7 @@
     void cursor;
     void brushSize;
     void bones;
+    void mesh;
     draw();
   });
 
@@ -368,6 +384,41 @@
       ctx.arc(x, y, r * 0.7, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+    }
+
+    // Deformable mesh grid (rig mode): triangle wireframe + vertices tinted by dominant bone,
+    // so the weight regions (which vertices follow which chain bone / bow to the parent) show.
+    if (tool === "bones" && mesh && mesh.vertices.length >= 6 && mesh.triangles.length >= 3) {
+      const vx = (i: number) => mesh.vertices[i] ?? 0;
+      const T = mesh.triangles;
+      ctx.lineWidth = 0.8 / zoom;
+      ctx.strokeStyle = "rgba(96, 200, 230, 0.45)";
+      ctx.beginPath();
+      for (let t = 0; t + 2 < T.length; t += 3) {
+        const a = T[t] * 2;
+        const b = T[t + 1] * 2;
+        const c = T[t + 2] * 2;
+        ctx.moveTo(vx(a), vx(a + 1));
+        ctx.lineTo(vx(b), vx(b + 1));
+        ctx.lineTo(vx(c), vx(c + 1));
+        ctx.closePath();
+      }
+      ctx.stroke();
+      const vr = 2.2 / zoom;
+      const w = mesh.weights;
+      for (let i = 0; i < mesh.vertices.length / 2; i++) {
+        let col = "rgba(96, 200, 230, 0.95)";
+        const inf = w?.[i]?.influences;
+        if (inf && inf.length) {
+          let best = inf[0];
+          for (const f of inf) if ((f.weight ?? 0) > (best.weight ?? 0)) best = f;
+          col = boneColor(best.bone);
+        }
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.arc(vx(i * 2), vx(i * 2 + 1), vr, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     // Bone gizmos.
@@ -450,6 +501,13 @@
       ctx.stroke();
     }
     ctx.restore();
+  }
+
+  /** Deterministic hue per bone name, so mesh vertices are tinted by their dominant bone. */
+  function boneColor(name: string): string {
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+    return `hsl(${h}, 72%, 62%)`;
   }
 
   /** Tip position of a bone (screen y-down: Spine-CCW rotation flips y). */

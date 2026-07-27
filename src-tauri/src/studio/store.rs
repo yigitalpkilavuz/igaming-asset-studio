@@ -124,7 +124,8 @@ pub fn sanitize(base: &Path, game_id: &str, asset_key: &str, doc: &mut StudioDoc
             crate::studio::doc::TimelineTarget::BoneRotate(b)
             | crate::studio::doc::TimelineTarget::BoneTranslate(b)
             | crate::studio::doc::TimelineTarget::BoneScale(b) => bone_names.contains(b),
-            crate::studio::doc::TimelineTarget::SlotAlpha(s) => slot_names.contains(s),
+            crate::studio::doc::TimelineTarget::SlotAlpha(s)
+            | crate::studio::doc::TimelineTarget::SlotColor(s) => slot_names.contains(s),
         });
         changed |= clip.timelines.len() != before;
     }

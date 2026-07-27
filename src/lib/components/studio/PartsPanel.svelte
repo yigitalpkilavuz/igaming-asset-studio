@@ -11,6 +11,7 @@
     onadd,
     ondelete,
     onmove,
+    ondeformable,
   }: {
     parts: Part[];
     selectedId: string | null;
@@ -22,6 +23,8 @@
     onadd: (name: string) => void;
     ondelete: (id: string) => void;
     onmove: (id: string, dir: -1 | 1) => void;
+    /** Toggle a part deformable (kept whole → mesh + bone chain + sway at rig time). */
+    ondeformable?: (id: string, value: boolean) => void;
   } = $props();
 
   let adding = $state(false);
@@ -76,6 +79,16 @@
           <span class="pname mono">{p.id}</span>
           <span class="muted tiny">{s.label}</span>
         </button>
+        {#if ondeformable}
+          <button
+            class="deform"
+            class:on={p.deformable}
+            title={p.deformable
+              ? "deformable — kept whole, auto-rigged as a waving mesh chain · click to make rigid"
+              : "rigid · click to mark deformable (hair/cloak/cloth → mesh + bone chain + sway)"}
+            onclick={() => ondeformable(p.id, !p.deformable)}
+          >∿</button>
+        {/if}
         <span class="ops">
           <button class="ghost op" title="move back" disabled={i === 0} onclick={() => onmove(p.id, -1)}>↑</button>
           <button class="ghost op" title="move front" disabled={i === parts.length - 1} onclick={() => onmove(p.id, 1)}>↓</button>
@@ -197,6 +210,24 @@
   }
   .op.del:hover {
     color: var(--oxblood);
+  }
+  /* Deformable toggle: always visible so the ledger shows which parts mesh + wave. */
+  .deform {
+    flex: none;
+    padding: 0.1rem 0.35rem;
+    font-size: 0.9rem;
+    line-height: 1;
+    color: var(--ash-deep);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+  }
+  .deform:hover {
+    color: var(--bone);
+  }
+  .deform.on {
+    color: var(--lapis);
+    border-color: var(--lapis);
   }
   .empty {
     margin-top: 0.8rem;
