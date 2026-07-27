@@ -17,6 +17,7 @@
   import EditCanvas, { type GizmoBone } from "./EditCanvas.svelte";
   import BoneTree from "./BoneTree.svelte";
   import Slider from "./Slider.svelte";
+  import Swaps from "./Swaps.svelte";
   import PoseOverlay from "./PoseOverlay.svelte";
   import SpinePreview from "./SpinePreview.svelte";
 
@@ -227,86 +228,13 @@
     }
   }
 
-  // ── Attachment swap (alternate art on this slot) ─────────────────────────────
-  let altBusy = $state(false);
-  let altPrompt = $state("");
-  let altName = $state("");
-  let altFileEl = $state<HTMLInputElement | null>(null);
-
-  // Load a thumbnail for each alternate so misalignment is caught at a glance. The requested set
-  // is plain (non-reactive) so writing a thumbnail never re-triggers this loader.
-  let altThumbs = $state<Record<string, string>>({});
-  const altRequested = new Set<string>();
-  $effect(() => {
-    for (const a of selectedSlot?.alternates ?? []) {
-      if (!altRequested.has(a)) {
-        altRequested.add(a);
-        unwrap(commands.studioGetImage(gameId, assetKey, `parts/${a}/cut.png`))
-          .then((url) => (altThumbs[a] = url))
-          .catch(() => {});
-      }
-    }
-  });
-
+  // ── Attachment swap ("part swapping") — the shared <Swaps> panel drives the UI;
+  //    this just folds the returned doc back in and rebuilds the preview atlas. ──
   function applyAlt(updated: StudioDoc) {
     Object.assign(doc, updated);
     doc.slots = [...doc.slots];
     doc.parts = [...doc.parts];
     scheduleRebuild();
-  }
-  async function generateAlt() {
-    if (!selectedPart || !altPrompt.trim()) return;
-    altBusy = true;
-    error = "";
-    try {
-      const nm = altName.trim() || altPrompt.trim().slice(0, 24);
-      applyAlt(
-        await unwrap(
-          commands.studioGenerateAlternate(gameId, assetKey, selectedPart.id, nm, altPrompt.trim()),
-        ),
-      );
-      altPrompt = "";
-      altName = "";
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      altBusy = false;
-    }
-  }
-  async function importAlt(e: Event) {
-    const el = e.currentTarget as HTMLInputElement;
-    const file = el.files?.[0];
-    el.value = "";
-    if (!file || !selectedPart) return;
-    altBusy = true;
-    error = "";
-    try {
-      const dataUrl = await new Promise<string>((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(r.result as string);
-        r.onerror = () => rej(r.error);
-        r.readAsDataURL(file);
-      });
-      const nm = altName.trim() || file.name.replace(/\.[^.]+$/, "");
-      applyAlt(await unwrap(commands.studioAddAlternate(gameId, assetKey, selectedPart.id, nm, dataUrl)));
-      altName = "";
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      altBusy = false;
-    }
-  }
-  async function removeAlt(altId: string) {
-    if (!selectedPart) return;
-    altBusy = true;
-    error = "";
-    try {
-      applyAlt(await unwrap(commands.studioRemoveAlternate(gameId, assetKey, selectedPart.id, altId)));
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      altBusy = false;
-    }
   }
 
   async function autoRig() {
@@ -572,56 +500,8 @@
           </p>
 
           <span class="grp u-label">Attachments (swap)</span>
-          {#if selectedSlot.alternates?.length}
-            <ul class="alts">
-              {#each selectedSlot.alternates as alt (alt)}
-                <li class="alt">
-                  {#if altThumbs[alt]}
-                    <img class="althumb" src={altThumbs[alt]} alt={alt} />
-                  {:else}
-                    <span class="althumb ph"></span>
-                  {/if}
-                  <span class="mono tiny aname">{alt}</span>
-                  <button class="ghost x" title="remove" disabled={altBusy} onclick={() => removeAlt(alt)}>×</button>
-                </li>
-              {/each}
-            </ul>
-          {:else}
-            <p class="muted tiny">
-              No alternates. Add closed eyes, a mouth shape, a lit gem… then key the swap (or a
-              blink) in <b>Animate</b>. A slot can also just hide/show with no alternate.
-            </p>
-          {/if}
-          <div class="alt-add">
-            <input
-              class="alt-in"
-              placeholder="name (optional)"
-              bind:value={altName}
-              disabled={altBusy}
-            />
-            <div class="alt-gen">
-              <input
-                class="alt-in"
-                placeholder="describe a variant…"
-                bind:value={altPrompt}
-                disabled={altBusy}
-                onkeydown={(e) => e.key === "Enter" && generateAlt()}
-              />
-              <button class="ghost tiny-btn" disabled={altBusy || !altPrompt.trim()} onclick={generateAlt}>
-                {altBusy ? "…" : "Generate"}
-              </button>
-            </div>
-            <button class="ghost tiny-btn" disabled={altBusy} onclick={() => altFileEl?.click()}>
-              Import PNG…
-            </button>
-            <input
-              bind:this={altFileEl}
-              type="file"
-              accept="image/png,image/webp"
-              hidden
-              onchange={importAlt}
-            />
-          </div>
+          <Swaps {gameId} {assetKey} {doc} applyDoc={applyAlt} preselect={selectedPart?.id} />
+          <p class="muted tiny">Key the swap (or an AI blink) over in <b>Animate ▸ ⇄ Swaps</b>.</p>
         {/if}
       {:else}
         <p class="muted small">Select a bone in the canvas or tree.</p>
@@ -767,68 +647,6 @@
     gap: 0.35rem;
     color: var(--bone-dim);
     margin-top: 0.3rem;
-  }
-  .tiny-btn {
-    font-size: 0.7rem;
-    padding: 0.15rem 0.5rem;
-    align-self: flex-start;
-  }
-  .alts {
-    list-style: none;
-    margin: 0.3rem 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-  }
-  .althumb {
-    width: 26px;
-    height: 26px;
-    object-fit: contain;
-    background: var(--ink-2, rgba(16, 17, 21, 0.6));
-    border-radius: 3px;
-    flex: none;
-  }
-  .althumb.ph {
-    display: inline-block;
-  }
-  .alt {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.15rem 0.35rem;
-    border-radius: var(--radius-sm);
-    background: var(--wash);
-  }
-  .aname {
-    flex: 1;
-    color: var(--bone-dim);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .alt .x {
-    color: var(--oxblood);
-    background: transparent;
-    border: none;
-    padding: 0 0.2rem;
-    font-size: 0.85rem;
-    flex: none;
-  }
-  .alt-add {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    margin-top: 0.3rem;
-  }
-  .alt-gen {
-    display: flex;
-    gap: 0.3rem;
-  }
-  .alt-in {
-    flex: 1;
-    font-size: 0.72rem;
-    min-width: 0;
   }
   .preview-card {
     margin-top: auto;

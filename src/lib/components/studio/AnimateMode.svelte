@@ -20,6 +20,7 @@
   import SpinePreview, { type StageBone } from "./SpinePreview.svelte";
   import Timeline from "./Timeline.svelte";
   import CurveEditor from "./CurveEditor.svelte";
+  import Swaps from "./Swaps.svelte";
   import {
     poseHit,
     beginDrag,
@@ -453,6 +454,55 @@
     }
   }
 
+  // ── Part swapping (attachment alternates) ────────────────────────────────────
+  let inspectorTab = $state<"inspect" | "swaps">("inspect");
+  // Preselect the part behind a selected slot key, so the picker opens on what you're editing.
+  const swapPreselect = $derived.by(() => {
+    const t = selectedKey?.tl.target;
+    if (!t) return null;
+    const nm = Object.values(t)[0] as string;
+    return doc.slots.find((s) => s.name === nm)?.partId ?? null;
+  });
+
+  /** A new alternate adds an atlas region, so rebuild the FULL preview (not the skeleton fast path). */
+  async function applyDocSwap(updated: StudioDoc) {
+    Object.assign(doc, updated);
+    doc.slots = [...doc.slots];
+    doc.parts = [...doc.parts];
+    doc.clips = [...doc.clips];
+    try {
+      bundle = await unwrap(
+        commands.studioPreviewBundle(gameId, assetKey, $state.snapshot(doc) as StudioDoc),
+      );
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /** Drop a ready-to-retime swap (base → alternate → base) on the current clip. */
+  function addSwapTrack(slotName: string) {
+    if (!clip) return;
+    const target = { slotAttachment: slotName };
+    if (!clip.timelines.some((tl) => JSON.stringify(tl.target) === JSON.stringify(target))) {
+      const dur = clip.duration ?? 2;
+      const slot = doc.slots.find((s) => s.name === slotName);
+      const idx = (slot?.alternates?.length ?? 0) > 0 ? 1 : -1; // first alternate, else hide/show
+      const mid = dur * 0.5;
+      const w = Math.min(0.16, dur * 0.12);
+      clip.timelines.push({
+        target,
+        keys: [
+          { time: 0, v: [0], curve: "stepped" },
+          { time: Math.max(0.01, mid - w / 2), v: [idx], curve: "stepped" },
+          { time: Math.min(dur, mid + w / 2), v: [0], curve: "stepped" },
+        ],
+      });
+      doc.clips = [...doc.clips];
+    }
+    inspectorTab = "inspect";
+    commit();
+  }
+
   // ── Spritesheet bake — invoked from the Studio top bar (it's an exporter, not an
   //    AI tool). Returns a status message for the caller's strip; throws on failure.
   export async function bakeSheet(): Promise<string> {
@@ -560,7 +610,20 @@
     </section>
 
     <aside class="inspector">
-      {#if selectedKey}
+      <div class="insp-tabs">
+        <button class:on={inspectorTab === "inspect"} onclick={() => (inspectorTab = "inspect")}>Inspect</button>
+        <button class:on={inspectorTab === "swaps"} onclick={() => (inspectorTab = "swaps")}>⇄ Swaps</button>
+      </div>
+      {#if inspectorTab === "swaps"}
+        <Swaps
+          {gameId}
+          {assetKey}
+          {doc}
+          applyDoc={applyDocSwap}
+          preselect={swapPreselect}
+          onAnimate={addSwapTrack}
+        />
+      {:else if selectedKey}
         <span class="u-label">Key</span>
         <p class="mono ktarget">{JSON.stringify(selectedKey.tl.target).replace(/[{}"]/g, "")}</p>
         <label class="field">
@@ -826,7 +889,7 @@
     opacity: 0.7;
   }
   .inspector {
-    width: 210px;
+    width: 232px;
     flex: none;
     border-left: 1px solid var(--line);
     padding: 0.9rem;
@@ -834,6 +897,29 @@
     flex-direction: column;
     gap: 0.55rem;
     overflow-y: auto;
+  }
+  .insp-tabs {
+    display: flex;
+    gap: 0.25rem;
+    padding-bottom: 0.45rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .insp-tabs button {
+    flex: 1;
+    font-size: 0.72rem;
+    color: var(--ash);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.25rem 0.4rem;
+  }
+  .insp-tabs button:hover {
+    color: var(--bone-dim);
+  }
+  .insp-tabs button.on {
+    color: var(--bone);
+    background: var(--wash);
+    border-color: var(--line-2);
   }
   .ktarget {
     margin: 0;
