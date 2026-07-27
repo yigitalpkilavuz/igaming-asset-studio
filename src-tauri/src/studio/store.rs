@@ -104,6 +104,20 @@ pub fn sanitize(base: &Path, game_id: &str, asset_key: &str, doc: &mut StudioDoc
     });
     changed |= doc.slots.len() != before;
 
+    // Alternate attachments must reference a real, cut part (else skin emission errors).
+    let valid_parts: std::collections::HashSet<&str> = parts
+        .iter()
+        .filter(|p| {
+            p.effective_bbox().is_some() && part_texture_path(base, game_id, asset_key, p).is_file()
+        })
+        .map(|p| p.id.as_str())
+        .collect();
+    for s in &mut doc.slots {
+        let before = s.alternates.len();
+        s.alternates.retain(|a| valid_parts.contains(a.as_str()));
+        changed |= s.alternates.len() != before;
+    }
+
     // Slots bound to vanished bones fall back to root (part stays visible, unrigged).
     let bone_names: Vec<String> = doc.bones.iter().map(|b| b.name.clone()).collect();
     for s in &mut doc.slots {
@@ -125,10 +139,56 @@ pub fn sanitize(base: &Path, game_id: &str, asset_key: &str, doc: &mut StudioDoc
             | crate::studio::doc::TimelineTarget::BoneTranslate(b)
             | crate::studio::doc::TimelineTarget::BoneScale(b) => bone_names.contains(b),
             crate::studio::doc::TimelineTarget::SlotAlpha(s)
-            | crate::studio::doc::TimelineTarget::SlotColor(s) => slot_names.contains(s),
+            | crate::studio::doc::TimelineTarget::SlotColor(s)
+            | crate::studio::doc::TimelineTarget::SlotDeform(s)
+            | crate::studio::doc::TimelineTarget::SlotAttachment(s) => slot_names.contains(s),
         });
         changed |= clip.timelines.len() != before;
     }
+
+    // Deform/attachment timelines go stale when a mesh's vertex count or a slot's alternate list
+    // changes; drop the ones that would break emit() and clamp out-of-range swap indices.
+    let mesh_len: std::collections::HashMap<String, Option<usize>> = doc
+        .slots
+        .iter()
+        .map(|s| {
+            let len = match &s.attachment {
+                crate::studio::doc::Attachment::Mesh(m) => Some(m.vertices.len()),
+                _ => None,
+            };
+            (s.name.clone(), len)
+        })
+        .collect();
+    let att_count: std::collections::HashMap<String, usize> = doc
+        .slots
+        .iter()
+        .map(|s| (s.name.clone(), 1 + s.alternates.len()))
+        .collect();
+    for clip in &mut doc.clips {
+        let before = clip.timelines.len();
+        clip.timelines.retain(|tl| match &tl.target {
+            crate::studio::doc::TimelineTarget::SlotDeform(s) => match mesh_len.get(s) {
+                Some(Some(len)) => tl.keys.iter().all(|k| k.v.len() == *len),
+                _ => false, // slot vanished or no longer a mesh
+            },
+            _ => true,
+        });
+        changed |= clip.timelines.len() != before;
+        for tl in &mut clip.timelines {
+            if let crate::studio::doc::TimelineTarget::SlotAttachment(s) = &tl.target {
+                let n = *att_count.get(s).unwrap_or(&1) as f64;
+                for k in &mut tl.keys {
+                    if let Some(v0) = k.v.first_mut() {
+                        if *v0 >= n {
+                            *v0 = 0.0;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let before = doc.clips.len();
     doc.clips.retain(|c| !c.timelines.is_empty());
     changed |= doc.clips.len() != before;
@@ -165,6 +225,7 @@ mod tests {
             part_id: "ghost".into(),
             attachment: Default::default(),
             blend: Default::default(),
+            alternates: Default::default(),
         });
         doc.physics = vec![crate::studio::doc::PhysicsSpec::sway("nope")];
 

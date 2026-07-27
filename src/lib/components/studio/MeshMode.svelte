@@ -9,6 +9,7 @@
   import { commands, unwrap, type Clip, type PreviewBundle, type StudioDoc } from "$lib/ipc";
   import EditCanvas, { type GizmoBone } from "./EditCanvas.svelte";
   import SpinePreview from "./SpinePreview.svelte";
+  import Slider from "./Slider.svelte";
 
   let {
     gameId,
@@ -32,11 +33,31 @@
   let meshBusy = $state(false);
   let density = $state(8);
 
+  // 2.5D depth turn.
+  const TURN_CLIP = "turn";
+  let watchClip = $state(WIGGLE);
+  let depthReady = $state<boolean | null>(null);
+  let turnBusy = $state(false);
+  let turn = $state({
+    yawAmp: 22,
+    pitchAmp: 6,
+    depth: 0.12,
+    lens: 2.5,
+    cycles: 1,
+    duration: 2.5,
+    edgePin: 0.5,
+  });
+
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   let densityTimer: ReturnType<typeof setTimeout> | null = null;
 
   const deformableParts = $derived(doc.parts.filter((p) => p.deformable));
+  // Every rigged part (has its own slot) — any can take a mesh + a 2.5D turn; deformable ones
+  // additionally carry a sway chain. Alternate (attachment-only) parts are excluded.
+  const parts = $derived(
+    doc.parts.filter((p) => !p.attachmentOnly && doc.slots.some((s) => s.partId === p.id)),
+  );
 
   const hasMesh = (partId: string) => {
     const a = doc.slots.find((s) => s.partId === partId)?.attachment;
@@ -48,8 +69,12 @@
       sourceUrl = await unwrap(commands.studioGetImage(gameId, assetKey, "source.png")).catch(
         () => null,
       );
-      const first = deformableParts[0];
+      const first = parts[0];
       if (first) selectPart(first.id);
+      depthReady =
+        (
+          await unwrap(commands.layersDepthStatus()).catch(() => ({ state: "missing" as const }))
+        ).state === "ready";
       rebuildPreview();
     })();
     return () => {
@@ -220,20 +245,61 @@
     doc.parts = [...doc.parts];
     commit();
   }
+
+  // ── 2.5D depth turn ──────────────────────────────────────────────────────────────
+  async function downloadDepth() {
+    turnBusy = true;
+    error = "";
+    try {
+      const s = await unwrap(commands.layersDepthDownload());
+      depthReady = s.state === "ready";
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      turnBusy = false;
+    }
+  }
+  async function bakeTurn() {
+    if (!selectedId) return;
+    turnBusy = true;
+    error = "";
+    try {
+      const updated = await unwrap(
+        commands.studioBakeTurn(
+          gameId,
+          assetKey,
+          selectedId,
+          TURN_CLIP,
+          $state.snapshot(turn),
+          density,
+        ),
+      );
+      Object.assign(doc, updated);
+      doc.slots = [...doc.slots];
+      doc.clips = [...doc.clips];
+      watchClip = TURN_CLIP;
+      centerTab = "watch";
+      await rebuildPreview();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      turnBusy = false;
+    }
+  }
 </script>
 
 <div class="mesh">
   <aside class="left">
-    <span class="u-label">Deformable parts</span>
-    {#if deformableParts.length}
+    <span class="u-label">Parts</span>
+    {#if parts.length}
       <ul>
-        {#each deformableParts as p (p.id)}
+        {#each parts as p (p.id)}
           <li class:sel={p.id === selectedId}>
             <button class="row" onclick={() => selectPart(p.id)}>
-              <span class="wave">∿</span>
+              <span class="wave" class:rigid={!p.deformable}>{p.deformable ? "∿" : "◆"}</span>
               <span class="pname mono">{p.id}</span>
               <span class="muted tiny" class:dim={!hasMesh(p.id)}>
-                {hasMesh(p.id) ? "mesh" : "no mesh"}
+                {hasMesh(p.id) ? "mesh" : "—"}
               </span>
             </button>
           </li>
@@ -241,8 +307,8 @@
       </ul>
     {:else}
       <p class="muted small empty">
-        No deformable parts yet. In the <b>Cut</b> tab, click the ∿ on a part (hair, cloak,
-        cloth) to mark it deformable, then run auto-rig in <b>Rig</b>.
+        No cut parts yet. Cut a part in the <b>Cut</b> tab first. Mark hair/cloak/cloth
+        deformable (∿) for a sway chain; any part can take a 2.5D turn.
       </p>
     {/if}
   </aside>
@@ -251,10 +317,18 @@
     <nav class="subtabs">
       <button class="stab" class:on={centerTab === "mesh"} onclick={() => (centerTab = "mesh")}>Mesh</button>
       <button class="stab" class:on={centerTab === "watch"} onclick={() => (centerTab = "watch")}>Watch</button>
+      {#if centerTab === "watch"}
+        <button class="stab mini" class:on={watchClip === WIGGLE} onclick={() => (watchClip = WIGGLE)}>sway</button>
+        {#if doc.clips.some((c) => c.name === TURN_CLIP)}
+          <button class="stab mini" class:on={watchClip === TURN_CLIP} onclick={() => (watchClip = TURN_CLIP)}>turn</button>
+        {/if}
+      {/if}
       <span class="hint muted tiny">
         {centerTab === "mesh"
           ? "vertices are tinted by the bone that moves them"
-          : "the body rocks so the chains sway — tune it on the right"}
+          : watchClip === TURN_CLIP
+            ? "2.5D depth turn — tune it on the right"
+            : "the body rocks so the chains sway — tune it on the right"}
       </span>
     </nav>
     <div class="canvas-holder">
@@ -270,7 +344,7 @@
           onboneselect={selectByBone}
         />
       {:else}
-        <SpinePreview {bundle} clip={WIGGLE} playing loop />
+        <SpinePreview {bundle} clip={watchClip} playing loop onstatus={(s) => (error = s.error ?? "")} />
       {/if}
     </div>
   </section>
@@ -279,10 +353,14 @@
     <div class="inspector">
       {#if selectedPart}
         <span class="u-label">Part</span>
-        <h3 class="mono sel-name">∿ {selectedPart.id}</h3>
-        <button class="ghost tiny-btn" onclick={makeRigid}>Make rigid</button>
+        <h3 class="mono sel-name" class:rigid-name={!selectedPart.deformable}>
+          {selectedPart.deformable ? "∿" : "◆"} {selectedPart.id}
+        </h3>
+        {#if selectedPart.deformable}
+          <button class="ghost tiny-btn" onclick={makeRigid}>Make rigid</button>
+        {/if}
 
-        {#if !hasChain}
+        {#if selectedPart.deformable && !hasChain}
           <p class="muted tiny warn">
             No bone chain yet — run auto-rig in the <b>Rig</b> tab to build this part's chain
             and mesh.
@@ -300,22 +378,21 @@
           <span class="tiny">deformable mesh {meshBusy ? "…" : ""}</span>
         </label>
         {#if meshEnabled && selectedMesh}
-          <label class="field">
-            <span class="muted tiny">
-              detail — {density} cells · {selectedMesh.triangles.length / 3} triangles
-            </span>
-            <input
-              type="range"
-              min="3"
-              max="16"
-              step="1"
-              value={density}
-              disabled={meshBusy}
-              oninput={(e) => onDensity(+e.currentTarget.value)}
-            />
-          </label>
+          <Slider
+            label="detail"
+            value={density}
+            min={3}
+            max={16}
+            step={1}
+            decimals={0}
+            suffix=" cells"
+            disabled={meshBusy}
+            oninput={onDensity}
+          />
+          <span class="muted tiny">{selectedMesh.triangles.length / 3} triangles</span>
         {/if}
 
+        {#if selectedPart.deformable}
         <span class="grp u-label">Sway</span>
         <label class="toggle">
           <input type="checkbox" checked={swayOn} onchange={(e) => toggleSway(e.currentTarget.checked)} />
@@ -323,31 +400,49 @@
         </label>
         {#if swayOn && sway}
           <div class="grid2">
-            <label class="field">
-              <span class="muted tiny">stiffness</span>
-              <input type="number" min="1" max="300" step="5" value={sway.strength ?? 60}
-                oninput={(e) => patchSway({ strength: +e.currentTarget.value })} />
-            </label>
-            <label class="field">
-              <span class="muted tiny">damping</span>
-              <input type="number" min="0.3" max="1" step="0.05" value={sway.damping ?? 0.85}
-                oninput={(e) => patchSway({ damping: +e.currentTarget.value })} />
-            </label>
-            <label class="field">
-              <span class="muted tiny">inertia</span>
-              <input type="number" min="0" max="1" step="0.05" value={sway.inertia ?? 0.5}
-                oninput={(e) => patchSway({ inertia: +e.currentTarget.value })} />
-            </label>
-            <label class="field">
-              <span class="muted tiny">gravity</span>
-              <input type="number" step="5" value={sway.gravity ?? 0}
-                oninput={(e) => patchSway({ gravity: +e.currentTarget.value })} />
-            </label>
+            <Slider label="stiffness" value={sway.strength ?? 60} min={1} max={300} step={5} decimals={0}
+              oninput={(v) => patchSway({ strength: v })} />
+            <Slider label="damping" value={sway.damping ?? 0.85} min={0.3} max={1} step={0.05} decimals={2}
+              oninput={(v) => patchSway({ damping: v })} />
+            <Slider label="inertia" value={sway.inertia ?? 0.5} min={0} max={1} step={0.05} decimals={2}
+              oninput={(v) => patchSway({ inertia: v })} />
+            <Slider label="gravity" value={sway.gravity ?? 0} min={-40} max={40} step={5} decimals={0}
+              oninput={(v) => patchSway({ gravity: v })} />
           </div>
           <p class="muted tiny">Runtime-simulated — flip to <b>Watch</b> to see it move.</p>
         {/if}
+        {/if}
+
+        <span class="grp u-label">Depth / Turn (2.5D)</span>
+        {#if depthReady === false}
+          <p class="muted tiny warn">Depth model isn't downloaded yet (~190 MB).</p>
+          <button class="ghost tiny-btn" onclick={downloadDepth} disabled={turnBusy}>
+            {turnBusy ? "downloading…" : "Download depth model"}
+          </button>
+        {:else}
+          <p class="muted tiny">
+            Give this part volume: a looping turn baked from an estimated relief map, played as a
+            mesh deform.
+          </p>
+          <div class="grid2">
+            <Slider label="yaw" value={turn.yawAmp} min={0} max={60} step={1} decimals={0} suffix="°" oninput={(v) => (turn.yawAmp = v)} />
+            <Slider label="pitch" value={turn.pitchAmp} min={0} max={45} step={1} decimals={0} suffix="°" oninput={(v) => (turn.pitchAmp = v)} />
+            <Slider label="depth" value={turn.depth} min={0} max={0.4} step={0.02} decimals={2} oninput={(v) => (turn.depth = v)} />
+            <Slider label="lens" value={turn.lens} min={1} max={8} step={0.5} decimals={1} oninput={(v) => (turn.lens = v)} />
+            <Slider label="cycles" value={turn.cycles} min={1} max={4} step={1} decimals={0} oninput={(v) => (turn.cycles = v)} />
+            <Slider label="seconds" value={turn.duration} min={0.5} max={8} step={0.5} decimals={1} suffix="s" oninput={(v) => (turn.duration = v)} />
+            <Slider label="edge pin" value={turn.edgePin} min={0} max={1} step={0.1} decimals={2} amber oninput={(v) => (turn.edgePin = v)} />
+          </div>
+          <button class="ghost tiny-btn" onclick={bakeTurn} disabled={turnBusy || !selectedId}>
+            {turnBusy ? "baking…" : "Generate turn"}
+          </button>
+          <p class="muted tiny">
+            Replaces this part's mesh with an unweighted turn mesh. Watch it in
+            <b>Watch ▸ turn</b>.
+          </p>
+        {/if}
       {:else}
-        <p class="muted small">Select a deformable part on the left.</p>
+        <p class="muted small">Select a part on the left.</p>
       {/if}
     </div>
   </aside>
@@ -394,6 +489,17 @@
     color: var(--lapis);
     font-size: 0.95rem;
     flex: none;
+  }
+  .wave.rigid {
+    color: var(--ash);
+    font-size: 0.7rem;
+  }
+  .rigid-name {
+    color: var(--bone);
+  }
+  .stab.mini {
+    font-size: 0.7rem;
+    padding: 0.1rem 0.45rem;
   }
   .pname {
     flex: 1;

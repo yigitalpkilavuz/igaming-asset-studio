@@ -80,6 +80,10 @@ pub struct Part {
     /// auto-rigged as a mesh on a bone chain with sway physics, rather than a rigid quad.
     #[serde(default)]
     pub deformable: bool,
+    /// This part exists only as an alternate attachment on a host slot (blink/swap art) — it is
+    /// packed into the atlas and registered in the skin, but never gets its own slot or bone.
+    #[serde(default)]
+    pub attachment_only: bool,
 }
 
 impl Part {
@@ -169,6 +173,10 @@ pub struct Slot {
     /// layers generated on black become pure light.
     #[serde(default)]
     pub blend: BlendMode,
+    /// Part-ids of alternate attachments selectable on this slot over time (EYES_CLOSED, mouth
+    /// shapes…). A `SlotAttachment` timeline indexes `[part_id, ...alternates]`.
+    #[serde(default)]
+    pub alternates: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
@@ -251,18 +259,31 @@ pub enum TimelineTarget {
     SlotAlpha(String),
     /// Absolute RGB tint 0..1 on a slot (win flashes, glows, near-miss tints). `v = [r, g, b]`.
     SlotColor(String),
+    /// Per-vertex mesh offsets over time on a slot's mesh attachment (2.5D turn, ripple).
+    /// `v = [dx0, dy0, dx1, dy1, …]`, length `2 × vertex_count`, source-px (y-down) deltas.
+    /// GENERATED ONLY (turn baker / procedural deform) — never hand-authored per vertex.
+    SlotDeform(String),
+    /// Active attachment on a slot over time (blink, mouth shapes, show/hide). `v = [index]`
+    /// into `[part_id, ...slot.alternates]`; `index == HIDE_INDEX` hides the slot.
+    SlotAttachment(String),
 }
 
 impl TimelineTarget {
-    /// Number of value components a key on this timeline carries.
-    pub fn components(&self) -> usize {
+    /// Number of value components a key on this timeline carries, or `None` when the arity is
+    /// dynamic — deform keys hold `2 × mesh vertex_count` floats, resolved at emit time.
+    pub fn components(&self) -> Option<usize> {
         match self {
-            TimelineTarget::BoneRotate(_) | TimelineTarget::SlotAlpha(_) => 1,
-            TimelineTarget::BoneTranslate(_) | TimelineTarget::BoneScale(_) => 2,
-            TimelineTarget::SlotColor(_) => 3,
+            TimelineTarget::BoneRotate(_) | TimelineTarget::SlotAlpha(_) => Some(1),
+            TimelineTarget::BoneTranslate(_) | TimelineTarget::BoneScale(_) => Some(2),
+            TimelineTarget::SlotColor(_) => Some(3),
+            TimelineTarget::SlotAttachment(_) => Some(1),
+            TimelineTarget::SlotDeform(_) => None,
         }
     }
 }
+
+/// Sentinel `SlotAttachment` key value meaning "hide the slot" (show no attachment).
+pub const HIDE_INDEX: f64 = -1.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -393,6 +414,7 @@ impl StudioDoc {
             completed_bbox: None,
             texture: PartTexture::Cut,
             deformable: false,
+            attachment_only: false,
         };
         let root = Bone::new("root", None, cx, cy);
         let body = Bone::new("body", Some("root".into()), cx, cy);
@@ -402,6 +424,7 @@ impl StudioDoc {
             part_id: "all".into(),
             attachment: Attachment::Region,
             blend: BlendMode::Normal,
+            alternates: Vec::new(),
         };
         Self {
             version: DOC_VERSION,

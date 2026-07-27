@@ -199,6 +199,8 @@ mod tests {
         write_png(&store::source_path(&base, gid, key), 500, 480, [80, 80, 90, 255]);
         write_png(&store::part_dir(&base, gid, key, "torso").join("cut.png"), 300, 400, [120, 40, 40, 255]);
         write_png(&store::part_dir(&base, gid, key, "head").join("cut.png"), 200, 160, [40, 120, 60, 255]);
+        // Alternate ("closed") head art, same box → a blink/swap attachment.
+        write_png(&store::part_dir(&base, gid, key, "head_closed").join("cut.png"), 200, 160, [60, 40, 120, 255]);
 
         use crate::studio::doc::*;
         let mut doc = StudioDoc::seed(
@@ -216,6 +218,7 @@ mod tests {
                 completed_bbox: None,
                 texture: PartTexture::Cut,
                 deformable: false,
+                attachment_only: false,
             },
             Part {
                 id: "head".into(),
@@ -227,6 +230,20 @@ mod tests {
                 completed_bbox: None,
                 texture: PartTexture::Cut,
                 deformable: false,
+                attachment_only: false,
+            },
+            // Attachment-only alternate for the head (blink/swap) — no slot/bone of its own.
+            Part {
+                id: "head_closed".into(),
+                name: "Head Closed".into(),
+                prompts: vec![],
+                bbox: Some(Rect { x: 150, y: 0, w: 200, h: 160 }),
+                mask_hash: None,
+                completed_hash: None,
+                completed_bbox: None,
+                texture: PartTexture::Cut,
+                deformable: false,
+                attachment_only: true,
             },
         ];
         doc.bones = vec![
@@ -240,8 +257,8 @@ mod tests {
             },
         ];
         doc.slots = vec![
-            Slot { name: "torso".into(), bone: "torso".into(), part_id: "torso".into(), attachment: Attachment::Region, blend: crate::studio::doc::BlendMode::Normal },
-            Slot { name: "head".into(), bone: "head".into(), part_id: "head".into(), attachment: Attachment::Region, blend: crate::studio::doc::BlendMode::Additive },
+            Slot { name: "torso".into(), bone: "torso".into(), part_id: "torso".into(), attachment: Attachment::Region, blend: crate::studio::doc::BlendMode::Normal, alternates: Vec::new() },
+            Slot { name: "head".into(), bone: "head".into(), part_id: "head".into(), attachment: Attachment::Region, blend: crate::studio::doc::BlendMode::Additive, alternates: vec!["head_closed".into()] },
         ];
         // The head gets a physics sway (exercises the 4.2 constraint emitter).
         doc.physics = vec![crate::studio::doc::PhysicsSpec::sway("head")];
@@ -254,6 +271,17 @@ mod tests {
         let mut torso_mesh = crate::studio::mesh::generate(&torso_tex, torso_bbox).unwrap();
         torso_mesh.weights = crate::studio::mesh::auto_weights(&doc, "torso", &torso_mesh);
         doc.slots[0].attachment = Attachment::Mesh(torso_mesh);
+
+        // Head becomes an UNWEIGHTED mesh (deform offsets are authoritative — the case the
+        // turn baker and ripple primitive target; weighted-mesh deform has different length
+        // semantics in the runtime, so the baker restricts itself to unweighted meshes).
+        let head_tex = image::open(store::part_dir(&base, gid, key, "head").join("cut.png"))
+            .unwrap()
+            .to_rgba8();
+        let head_bbox = doc.parts[1].bbox.unwrap();
+        let head_mesh = crate::studio::mesh::generate(&head_tex, head_bbox).unwrap();
+        let head_vc = head_mesh.vertices.len() / 2;
+        doc.slots[1].attachment = Attachment::Mesh(head_mesh);
 
         doc.clips = vec![StudioDoc::breathe_idle("torso"), {
             let mut c = StudioDoc::breathe_idle("torso");
@@ -274,6 +302,29 @@ mod tests {
                     Key { time: 2.0, v: vec![0.4], curve: Curve::Linear },
                 ],
             });
+            // Mesh-deform on the head mesh: an all-vertex bob (exercises the deform emitter +
+            // runtime parse). Offsets are source-px y-down deltas; here every vertex lifts 10px.
+            c.timelines.push(Timeline {
+                target: TimelineTarget::SlotDeform("head".into()),
+                keys: vec![
+                    Key { time: 0.0, v: vec![0.0; head_vc * 2], curve: Curve::Linear },
+                    Key {
+                        time: 1.0,
+                        v: (0..head_vc).flat_map(|_| [0.0, -10.0]).collect(),
+                        curve: Curve::Linear,
+                    },
+                    Key { time: 2.0, v: vec![0.0; head_vc * 2], curve: Curve::Linear },
+                ],
+            });
+            // Attachment swap on the head: base → head_closed → base (a blink).
+            c.timelines.push(Timeline {
+                target: TimelineTarget::SlotAttachment("head".into()),
+                keys: vec![
+                    Key { time: 0.0, v: vec![0.0], curve: Curve::Stepped },
+                    Key { time: 0.5, v: vec![1.0], curve: Curve::Stepped },
+                    Key { time: 0.7, v: vec![0.0], curve: Curve::Stepped },
+                ],
+            });
             c
         }];
 
@@ -283,5 +334,63 @@ mod tests {
             fs::copy(store::export_dir(&base, gid, key).join(f), out.join(f)).unwrap();
         }
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Dump the REAL preview bundle for an on-disk asset — the exact artifact every studio
+    /// preview renders. Confirms whether the skeleton/atlas/textures are valid (→ frontend
+    /// bug) or the bundle build fails/empties (→ backend bug). Env-gated. Run:
+    ///   WF_BASE=/…/projects WF_GAME=game WF_ASSET=key \
+    ///     cargo test --lib studio::preview::tests::bundle_real_asset_dump -- --nocapture
+    #[test]
+    fn bundle_real_asset_dump() {
+        let (Some(base), Ok(game), Ok(asset)) =
+            (std::env::var_os("WF_BASE"), std::env::var("WF_GAME"), std::env::var("WF_ASSET"))
+        else {
+            return;
+        };
+        let base = std::path::PathBuf::from(base);
+        let doc = store::read_doc(&base, &game, &asset).unwrap().unwrap();
+        eprintln!(
+            "doc: {} bones, {} slots, {} parts ({} cut), {} clips",
+            doc.bones.len(),
+            doc.slots.len(),
+            doc.parts.len(),
+            doc.parts.iter().filter(|p| p.bbox.is_some()).count(),
+            doc.clips.len()
+        );
+        for s in &doc.slots {
+            let att = match &s.attachment {
+                crate::studio::doc::Attachment::Region => "region",
+                crate::studio::doc::Attachment::Mesh(_) => "mesh",
+            };
+            let cut = store::part_texture_path(&base, &game, &asset, doc.part(&s.part_id).unwrap());
+            eprintln!("  slot {:<16} bone={:<16} att={att:<6} tex_exists={}", s.name, s.bone, cut.is_file());
+        }
+        match super::bundle(&base, &game, &asset, &doc) {
+            Ok(b) => {
+                eprintln!(
+                    "BUNDLE OK: skeleton {} B · atlas {} B · {} page(s)",
+                    b.skeleton_json.len(),
+                    b.atlas_text.len(),
+                    b.pages.len()
+                );
+                for p in &b.pages {
+                    eprintln!("  page {} dataUrl {} B", p.name, p.data_url.len());
+                }
+                let v: serde_json::Value = serde_json::from_str(&b.skeleton_json).unwrap();
+                let slots = v["slots"].as_array().map(|a| a.len()).unwrap_or(0);
+                let att_count = v["skins"]
+                    .as_array()
+                    .and_then(|s| s.first())
+                    .and_then(|s| s["attachments"].as_object())
+                    .map(|o| o.len())
+                    .unwrap_or(0);
+                eprintln!("  skeleton: {slots} slots, {att_count} skin-attachment groups");
+                if slots == 0 || b.pages.is_empty() {
+                    eprintln!("  ⚠ EMPTY — nothing to draw (this is why the preview is blank)");
+                }
+            }
+            Err(e) => eprintln!("BUNDLE FAILED: {e}  ← this is why the preview is blank"),
+        }
     }
 }

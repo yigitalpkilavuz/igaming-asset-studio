@@ -602,6 +602,7 @@ mod tests {
             completed_bbox: None,
             texture: PartTexture::Cut,
             deformable: false,
+            attachment_only: false,
         };
         let back_bbox = Rect { x: 0, y: 0, w: 40, h: 80 }; // claimed pixels (front took overlap)
         doc.parts = vec![

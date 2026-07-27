@@ -88,4 +88,28 @@ if (headSlot.blendMode !== BlendMode.Additive) fail(`head blend = ${headSlot.ble
 const torsoSlotB = data.slots.find((s) => s.name === "torso");
 if (torsoSlotB.blendMode !== BlendMode.Normal) fail("torso blend should be Normal");
 console.log("blend ok: head=additive, torso=normal");
+
+// Mesh-deform + attachment-swap timelines parse (the new channels).
+const winTimelineNames = win.timelines.map((t) => t.constructor.name);
+if (!winTimelineNames.includes("DeformTimeline"))
+  fail(`win has no DeformTimeline (got: ${winTimelineNames.join(", ")})`);
+if (!winTimelineNames.includes("AttachmentTimeline"))
+  fail(`win has no AttachmentTimeline (got: ${winTimelineNames.join(", ")})`);
+console.log("deform + attachment timelines ok:", winTimelineNames.join(", "));
+
+// The head ships as an UNWEIGHTED mesh so deform length == 2 * vertexCount (what we emit).
+const headAtt = data.defaultSkin.getAttachment(headSlot.index, "head");
+if (headAtt.constructor.name !== "MeshAttachment") fail(`head is ${headAtt.constructor.name}, want MeshAttachment`);
+if (headAtt.bones) fail("head mesh should be unweighted for deform");
+// The deform timeline's per-frame vertex array must match the mesh (parser enforces this).
+const deform = win.timelines.find((t) => t.constructor.name === "DeformTimeline");
+if (deform.vertices && deform.vertices[1] && deform.vertices[1].length !== headAtt.vertices.length)
+  fail(`deform frame length ${deform.vertices[1].length} != mesh ${headAtt.vertices.length}`);
+console.log(`deform ok: ${headAtt.vertices.length / 2} verts, offsets applied`);
+
+// The head slot carries the alternate "head_closed" attachment in the default skin.
+const headClosed = data.defaultSkin.getAttachment(headSlot.index, "head_closed");
+if (!headClosed) fail("head_closed alternate attachment missing from default skin");
+console.log("alternate attachment ok: head_closed present on head slot");
+
 console.log("ALL CHECKS PASSED — the runtime parser accepts our export.");

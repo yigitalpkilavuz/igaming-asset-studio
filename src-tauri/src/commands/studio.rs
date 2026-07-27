@@ -381,6 +381,7 @@ pub async fn studio_auto_cut(
                 completed_bbox: None,
                 texture: crate::studio::doc::PartTexture::Cut,
                 deformable: *deformable,
+                attachment_only: false,
             });
         }
         if parts.is_empty() {
@@ -1147,6 +1148,105 @@ pub async fn studio_set_mesh(
     Ok(doc)
 }
 
+/// Bake a looping 2.5D depth-turn into a mesh-deform clip for a part. Estimates a relief map
+/// (Depth-Anything), builds an UNWEIGHTED grid mesh, and projects it through a pinhole camera
+/// across a yaw/pitch sweep — the per-frame offsets become a Spine `deform` timeline that plays
+/// on the stock runtime with no custom code. Sets the part's slot to the (unweighted) mesh.
+#[tauri::command]
+#[specta::specta]
+pub async fn studio_bake_turn(
+    app: tauri::AppHandle,
+    game_id: String,
+    asset_key: String,
+    part_id: String,
+    clip_name: String,
+    params: crate::studio::turn::TurnParams,
+    // Mesh density (cells across the long side); 0 = default (~10 for a smooth turn).
+    density: u32,
+) -> Result<StudioDoc, String> {
+    let base = projects_root(&app)?;
+    let config = config_dir(&app)?;
+    if !crate::layers::depth::weights_ready(&config) {
+        return Err("depth model isn't downloaded yet — download it (Layers ▸ Depth) first".into());
+    }
+    let mut doc = store::read_doc(&base, &game_id, &asset_key)?
+        .ok_or_else(|| "no studio for this asset".to_string())?;
+    let slot_idx = doc
+        .slots
+        .iter()
+        .position(|s| s.part_id == part_id)
+        .ok_or_else(|| format!("no slot for part \"{part_id}\""))?;
+    let slot_name = doc.slots[slot_idx].name.clone();
+    let part = doc
+        .part(&part_id)
+        .ok_or_else(|| format!("unknown part \"{part_id}\""))?;
+    let bbox = part
+        .effective_bbox()
+        .ok_or_else(|| format!("part \"{part_id}\" has no texture yet"))?;
+    let tex_path = store::part_texture_path(&base, &game_id, &asset_key, part);
+    let detail = if density == 0 { 10 } else { density.clamp(3, 24) };
+    let dur = params.duration.clamp(0.4, 12.0);
+
+    let bake_slot = slot_name.clone();
+    let bake_params = params.clone();
+    let (mesh_data, timeline) = tauri::async_runtime::spawn_blocking(move || {
+        let tex = image::open(&tex_path)
+            .map_err(|e| format!("open part texture: {e}"))?
+            .to_rgba8();
+        let (tw, th) = tex.dimensions();
+        // Flatten to RGB over neutral gray (the depth model's convention); alpha isn't consumed.
+        let mut rgb = image::RgbImage::new(tw, th);
+        for (x, y, p) in tex.enumerate_pixels() {
+            let a = p.0[3] as u32;
+            let blend = |c: u8| ((c as u32 * a + 128 * (255 - a)) / 255) as u8;
+            rgb.put_pixel(x, y, image::Rgb([blend(p.0[0]), blend(p.0[1]), blend(p.0[2])]));
+        }
+        let raw = crate::layers::depth::estimate(&config, &rgb)?;
+        // Cleanup: subject-normalize + edge-aware smooth + neutral background; auto-scale depth
+        // by how much REAL relief the part has so flat art turns subtly, deep art fully.
+        let alpha: Vec<u8> = tex.pixels().map(|p| p.0[3]).collect();
+        let gain = crate::studio::turn::depth_gain(&raw, &alpha);
+        let relief = crate::studio::turn::clean_relief(&raw, &alpha, &rgb, tw, th);
+        let mut bake_params = bake_params;
+        bake_params.depth *= gain;
+        let mesh_data = mesh::generate_cells(&tex, bbox, detail)
+            .ok_or_else(|| "part texture is empty".to_string())?;
+        let timeline = crate::studio::turn::bake(
+            &bake_slot, &mesh_data, bbox, &relief, &alpha, tw, th, &bake_params,
+        );
+        Ok::<_, String>((mesh_data, timeline))
+    })
+    .await
+    .map_err(|e| format!("turn task failed: {e}"))??;
+
+    // The deform mesh becomes the slot's setup attachment (UNWEIGHTED so deform is 1:1 with verts).
+    doc.slots[slot_idx].attachment = Attachment::Mesh(mesh_data);
+
+    // Replace this slot's deform timeline inside the target clip (create the clip if absent).
+    let name = if clip_name.trim().is_empty() { "turn".to_string() } else { clip_name.trim().to_string() };
+    if let Some(clip) = doc.clips.iter_mut().find(|c| c.name == name) {
+        clip.timelines.retain(|tl| {
+            !matches!(&tl.target, crate::studio::doc::TimelineTarget::SlotDeform(s) if *s == slot_name)
+        });
+        clip.timelines.push(timeline);
+        clip.duration = clip.duration.max(dur);
+        clip.looping = true;
+    } else {
+        let id: String = name
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect::<String>()
+            .trim_matches('_')
+            .to_string();
+        let id = if id.is_empty() { "turn".to_string() } else { id };
+        doc.clips.push(Clip { id, name, duration: dur, looping: true, timelines: vec![timeline] });
+    }
+    doc.updated_at = now_ms();
+    store::write_doc(&base, &game_id, &asset_key, &doc)?;
+    Ok(doc)
+}
+
 /// Save baked clip frames (PNG data URLs from the real runtime) as a spritesheet +
 /// metadata under `studio/export/sheets/` — the fallback for non-Spine consumers.
 #[tauri::command]
@@ -1312,6 +1412,7 @@ pub async fn studio_generate_fx(
         completed_bbox: None,
         texture: crate::studio::doc::PartTexture::Cut,
         deformable: false, // FX light layers are rigid quads
+        attachment_only: false,
     });
     doc.bones.push(crate::studio::doc::Bone::new(
         id.clone(),
@@ -1325,8 +1426,257 @@ pub async fn studio_generate_fx(
         part_id: id.clone(),
         attachment: Attachment::Region,
         blend: crate::studio::doc::BlendMode::Additive,
+        alternates: Vec::new(),
     });
 
+    doc.updated_at = now_ms();
+    store::write_doc(&base, &game_id, &asset_key, &doc)?;
+    Ok(doc)
+}
+
+// ── Attachment swap (alternate art on a slot) ───────────────────────────────────
+
+/// Register `aligned` (source-scale, positioned over the host box) as an ATTACHMENT-ONLY part
+/// on `host_part_id`'s slot: trim to content, persist the texture, push the part + the alternate
+/// reference. The part gets no slot/bone of its own — it only ever shows as a swap.
+fn commit_alternate(
+    base: &std::path::Path,
+    game_id: &str,
+    asset_key: &str,
+    doc: &mut StudioDoc,
+    host_part_id: &str,
+    name: &str,
+    aligned: image::RgbaImage,
+    host_bbox: Rect,
+) -> Result<String, String> {
+    let slug = {
+        let s = segment::slugify(name);
+        if s.is_empty() { "alt".to_string() } else { s }
+    };
+    let mut id = slug.clone();
+    let mut i = 2;
+    while doc.parts.iter().any(|p| p.id == id) || doc.bones.iter().any(|b| b.name == id) || id == "root" {
+        id = format!("{slug}_{i}");
+        i += 1;
+    }
+    let trim = fx::alpha_bbox(&aligned).ok_or_else(|| "the alternate image is fully transparent".to_string())?;
+    let cropped =
+        image::imageops::crop_imm(&aligned, trim.x as u32, trim.y as u32, trim.w, trim.h).to_image();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(cropped)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|e| format!("encode alternate: {e}"))?;
+    store::write_file(
+        &store::part_dir(base, game_id, asset_key, &id).join("cut.png"),
+        &png.into_inner(),
+    )?;
+    // Alternate box in source space = host origin + the trim within the host-sized image.
+    let alt_bbox = Rect { x: host_bbox.x + trim.x, y: host_bbox.y + trim.y, w: trim.w, h: trim.h };
+    doc.parts.push(crate::studio::doc::Part {
+        id: id.clone(),
+        name: if name.trim().is_empty() { id.clone() } else { name.trim().to_string() },
+        prompts: vec![],
+        bbox: Some(alt_bbox),
+        mask_hash: None, // no mask = passes re-cut through untouched, like an FX layer
+        completed_hash: None,
+        completed_bbox: None,
+        texture: crate::studio::doc::PartTexture::Cut,
+        deformable: false,
+        attachment_only: true,
+    });
+    let slot = doc
+        .slots
+        .iter_mut()
+        .find(|s| s.part_id == host_part_id)
+        .ok_or_else(|| format!("no slot for host part \"{host_part_id}\""))?;
+    slot.alternates.push(id.clone());
+    Ok(id)
+}
+
+/// Add an alternate attachment to a slot by importing a PNG (data URL). The image is scaled to
+/// the host part's box so it overlays the base, then trimmed and registered as a swap option.
+#[tauri::command]
+#[specta::specta]
+pub async fn studio_add_alternate(
+    app: tauri::AppHandle,
+    game_id: String,
+    asset_key: String,
+    host_part_id: String,
+    name: String,
+    png_data_url: String,
+) -> Result<StudioDoc, String> {
+    let base = projects_root(&app)?;
+    let mut doc = store::read_doc(&base, &game_id, &asset_key)?
+        .ok_or_else(|| "no studio for this asset".to_string())?;
+    let host = doc
+        .part(&host_part_id)
+        .ok_or_else(|| format!("unknown part \"{host_part_id}\""))?;
+    let hb = host
+        .effective_bbox()
+        .ok_or_else(|| format!("part \"{host_part_id}\" has no texture yet"))?;
+
+    let b64 = png_data_url
+        .rsplit("base64,")
+        .next()
+        .ok_or_else(|| "bad image data URL".to_string())?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| format!("decode image: {e}"))?;
+    let img = image::load_from_memory(&bytes)
+        .map_err(|e| format!("read image: {e}"))?
+        .to_rgba8();
+    let aligned = image::imageops::resize(&img, hb.w, hb.h, image::imageops::FilterType::CatmullRom);
+    commit_alternate(&base, &game_id, &asset_key, &mut doc, &host_part_id, &name, aligned, hb)?;
+
+    doc.updated_at = now_ms();
+    store::write_doc(&base, &game_id, &asset_key, &doc)?;
+    Ok(doc)
+}
+
+#[derive(serde::Deserialize)]
+struct RegionBox {
+    #[serde(default)]
+    x: f64,
+    #[serde(default)]
+    y: f64,
+    #[serde(default = "one_f64")]
+    w: f64,
+    #[serde(default = "one_f64")]
+    h: f64,
+}
+fn one_f64() -> f64 {
+    1.0
+}
+
+/// Ask the vision model for the smallest region of `crop_png` that must be regenerated to make
+/// `change`, as a padded pixel `Rect`. `None` on any failure (caller falls back to whole crop).
+async fn locate_region(api_key: &str, crop_png: &[u8], change: &str, cw: u32, ch: u32) -> Option<Rect> {
+    const SYS: &str = "You are shown one image: a game-symbol part. Return ONLY a JSON object \
+        {\"x\":,\"y\":,\"w\":,\"h\":} — the normalized (0..1) bounding box of the SMALLEST region \
+        that must be regenerated to make the described change. For a local change (eyes, mouth, a \
+        gem) box it tightly; for a global change (recolor/restyle the whole part) return \
+        {\"x\":0,\"y\":0,\"w\":1,\"h\":1}.";
+    let txt = segment::vision_json(api_key, SYS, &format!("Change to make: {change}"), crop_png)
+        .await
+        .ok()?;
+    let b: RegionBox = serde_json::from_str(&txt).ok()?;
+    let (pad_x, pad_y) = ((cw as f64 * 0.04) as i32, (ch as f64 * 0.04) as i32);
+    let x = (b.x.clamp(0.0, 1.0) * cw as f64) as i32 - pad_x;
+    let y = (b.y.clamp(0.0, 1.0) * ch as f64) as i32 - pad_y;
+    let rx = x.max(0);
+    let ry = y.max(0);
+    let w = (b.w.clamp(0.02, 1.0) * cw as f64).round() as i32 + 2 * pad_x;
+    let h = (b.h.clamp(0.02, 1.0) * ch as f64).round() as i32 + 2 * pad_y;
+    let rw = (w.min(cw as i32 - rx)).max(1) as u32;
+    let rh = (h.min(ch as i32 - ry)).max(1) as u32;
+    Some(Rect { x: rx, y: ry, w: rw, h: rh })
+}
+
+/// Add an alternate attachment by GENERATING a variant of the host part with gpt-image-2. The
+/// vision model locates the sub-region to change from the prompt, gpt-image regenerates ONLY
+/// that (masked) region, and we composite the base pixel-identical everywhere else — so the
+/// alternate (closed eyes, open mouth, lit gem) registers PERFECTLY with the base, no drift.
+#[tauri::command]
+#[specta::specta]
+pub async fn studio_generate_alternate(
+    app: tauri::AppHandle,
+    game_id: String,
+    asset_key: String,
+    host_part_id: String,
+    name: String,
+    prompt: String,
+) -> Result<StudioDoc, String> {
+    let api_key = crate::secrets::get(crate::secrets::OPENAI_KEY)?
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| "OpenAI API key is not set (add it in Settings).".to_string())?;
+    if prompt.trim().is_empty() {
+        return Err("describe the alternate first".into());
+    }
+    let base = projects_root(&app)?;
+    let mut doc = store::read_doc(&base, &game_id, &asset_key)?
+        .ok_or_else(|| "no studio for this asset".to_string())?;
+    let host = doc
+        .part(&host_part_id)
+        .ok_or_else(|| format!("unknown part \"{host_part_id}\""))?;
+    let hb = host
+        .effective_bbox()
+        .ok_or_else(|| format!("part \"{host_part_id}\" has no texture yet"))?;
+    let host_tex_path = store::part_texture_path(&base, &game_id, &asset_key, host);
+
+    // Vision uses the configured model (gpt-4o family); ensure it's a vision model.
+    segment::set_vision_model(&crate::settings::load(&config_dir(&app)?).openai_vision_model);
+
+    let host_tex = image::open(&host_tex_path)
+        .map_err(|e| format!("open host texture: {e}"))?
+        .to_rgba8();
+    let (cw, ch) = host_tex.dimensions();
+    let mut crop_cur = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(host_tex.clone())
+        .write_to(&mut crop_cur, image::ImageFormat::Png)
+        .map_err(|e| format!("encode reference: {e}"))?;
+    let crop_png = crop_cur.into_inner();
+
+    // Locate the sub-region to regenerate (smart: reads the prompt + sees the art); fall back to
+    // the whole crop if the model can't localize.
+    let region = locate_region(&api_key, &crop_png, prompt.trim(), cw, ch)
+        .await
+        .unwrap_or(Rect { x: 0, y: 0, w: cw, h: ch });
+    let feather = (cw.min(ch) as f32 * 0.04).max(2.0);
+    let region_mask = fx::feathered_region(cw, ch, region, feather);
+    let mut mask_cur = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(fx::edit_mask_png(&region_mask))
+        .write_to(&mut mask_cur, image::ImageFormat::Png)
+        .map_err(|e| format!("encode mask: {e}"))?;
+
+    let edit_prompt = format!(
+        "{}. Keep the same subject, art style, framing, scale and transparent background; change \
+         ONLY the transparent (unmasked) region and blend it seamlessly into the rest.",
+        prompt.trim()
+    );
+    let size = crate::providers::openai_image::edit_size(cw, ch);
+    let out_png = crate::providers::openai_image::edit_image(
+        &api_key,
+        &crop_png,
+        &edit_prompt,
+        &size,
+        Some(&mask_cur.into_inner()),
+    )
+    .await?;
+    let generated = image::load_from_memory(&out_png)
+        .map_err(|e| format!("decode alternate: {e}"))?
+        .to_rgba8();
+    let generated = image::imageops::resize(&generated, cw, ch, image::imageops::FilterType::CatmullRom);
+    // Register-perfect: base pixels everywhere outside the region, generated inside.
+    let aligned = fx::composite_region(&host_tex, &generated, &region_mask);
+    commit_alternate(&base, &game_id, &asset_key, &mut doc, &host_part_id, &name, aligned, hb)?;
+
+    doc.updated_at = now_ms();
+    store::write_doc(&base, &game_id, &asset_key, &doc)?;
+    Ok(doc)
+}
+
+/// Remove an alternate attachment from a slot (and drop the now-orphan part + its texture).
+#[tauri::command]
+#[specta::specta]
+pub async fn studio_remove_alternate(
+    app: tauri::AppHandle,
+    game_id: String,
+    asset_key: String,
+    host_part_id: String,
+    alt_id: String,
+) -> Result<StudioDoc, String> {
+    let base = projects_root(&app)?;
+    let mut doc = store::read_doc(&base, &game_id, &asset_key)?
+        .ok_or_else(|| "no studio for this asset".to_string())?;
+    if let Some(slot) = doc.slots.iter_mut().find(|s| s.part_id == host_part_id) {
+        slot.alternates.retain(|a| a != &alt_id);
+    }
+    // Drop the attachment-only part (only if nothing else references it).
+    let still_used = doc.slots.iter().any(|s| s.alternates.contains(&alt_id));
+    if !still_used {
+        doc.parts.retain(|p| !(p.id == alt_id && p.attachment_only));
+        // Any swap timelines that pointed past the shrunken list are clamped by sanitize.
+    }
     doc.updated_at = now_ms();
     store::write_doc(&base, &game_id, &asset_key, &doc)?;
     Ok(doc)
@@ -1354,7 +1704,34 @@ pub async fn studio_ai_draft_clip(
     if brief.trim().is_empty() {
         return Err("describe the motion first".into());
     }
-    motion::draft_clip(&key, &doc, &name, &brief).await
+    // Give the director EYES: the symbol snapshot, so it grounds motion in materials it sees.
+    let image = std::fs::read(store::source_path(&base, &game_id, &asset_key)).ok();
+    motion::draft_clip(&key, &doc, &name, &brief, image.as_deref()).await
+}
+
+/// Higher-quality draft on demand (the "Polish" button): best-of-N candidates ranked by a
+/// deterministic score, then a vision critic picks the most tasteful/apt one.
+#[tauri::command]
+#[specta::specta]
+pub async fn studio_ai_polish_clip(
+    app: tauri::AppHandle,
+    game_id: String,
+    asset_key: String,
+    name: String,
+    brief: String,
+    candidates: u32,
+) -> Result<Clip, String> {
+    let key = crate::secrets::get(crate::secrets::OPENAI_KEY)?
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| "OpenAI API key is not set (add it in Settings).".to_string())?;
+    let base = projects_root(&app)?;
+    let doc = store::read_doc(&base, &game_id, &asset_key)?
+        .ok_or_else(|| "no studio for this asset".to_string())?;
+    if brief.trim().is_empty() {
+        return Err("describe the motion first".into());
+    }
+    let image = std::fs::read(store::source_path(&base, &game_id, &asset_key)).ok();
+    motion::draft_clip_polished(&key, &doc, &name, &brief, image.as_deref(), candidates).await
 }
 
 /// AI breakdown keys between two times of a clip. Takes the clip from the frontend

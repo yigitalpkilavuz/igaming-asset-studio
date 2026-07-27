@@ -64,6 +64,50 @@ pub fn alpha_bbox(img: &RgbaImage) -> Option<Rect> {
     any.then(|| Rect { x: x0 as i32, y: y0 as i32, w: x1 - x0 + 1, h: y1 - y0 + 1 })
 }
 
+// ── Region-masked edits (aligned attachment-swap alternates) ────────────────────
+
+/// A `w×h` coverage mask that is 255 deep inside `region` and ramps to 0 across a `feather`-px
+/// band at its edges. 255 = "regenerate / use the generated pixel", 0 = "keep the base pixel".
+pub fn feathered_region(w: u32, h: u32, region: Rect, feather: f32) -> image::GrayImage {
+    let (rx, ry) = (region.x as f32, region.y as f32);
+    let (rw, rh) = (region.w as f32, region.h as f32);
+    let f = feather.max(1.0);
+    image::GrayImage::from_fn(w, h, |x, y| {
+        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+        // Distance from the nearest rect edge; positive inside, negative outside.
+        let d = (px - rx).min(rx + rw - px).min((py - ry).min(ry + rh - py));
+        let v = (d / f).clamp(0.0, 1.0);
+        image::Luma([(v * 255.0).round() as u8])
+    })
+}
+
+/// The OpenAI edits mask for a region: TRANSPARENT where `region_mask` is high (the model may
+/// regenerate), OPAQUE where low (preserve). Same size as `region_mask`.
+pub fn edit_mask_png(region_mask: &image::GrayImage) -> RgbaImage {
+    RgbaImage::from_fn(region_mask.width(), region_mask.height(), |x, y| {
+        let m = region_mask.get_pixel(x, y).0[0];
+        image::Rgba([255, 255, 255, 255 - m]) // transparent inside the region
+    })
+}
+
+/// Composite `generated` over `base` ONLY inside `region_mask` (255 = generated, 0 = base,
+/// feathered between). Guarantees the alternate is pixel-identical to the base everywhere
+/// outside the region, so it registers perfectly. All three must share dimensions.
+pub fn composite_region(
+    base: &RgbaImage,
+    generated: &RgbaImage,
+    region_mask: &image::GrayImage,
+) -> RgbaImage {
+    let (w, h) = base.dimensions();
+    RgbaImage::from_fn(w, h, |x, y| {
+        let m = region_mask.get_pixel(x, y).0[0] as f32 / 255.0;
+        let b = base.get_pixel(x, y).0;
+        let g = generated.get_pixel(x, y).0;
+        let lerp = |bi: u8, gi: u8| (bi as f32 * (1.0 - m) + gi as f32 * m).round() as u8;
+        image::Rgba([lerp(b[0], g[0]), lerp(b[1], g[1]), lerp(b[2], g[2]), lerp(b[3], g[3])])
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +152,25 @@ mod tests {
             image::Rgba([0, 0, 0, 255])
         )))
         .is_none());
+    }
+
+    #[test]
+    fn composite_region_keeps_base_outside_and_generated_inside() {
+        let (w, h) = (10u32, 10u32);
+        let base = RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]));
+        let generated = RgbaImage::from_pixel(w, h, image::Rgba([200, 100, 50, 255]));
+        // Region = the central 4×4 box; feather 0 → a hard boundary so pixels are decisive.
+        let mask = feathered_region(w, h, Rect { x: 3, y: 3, w: 4, h: 4 }, 0.0);
+        let out = composite_region(&base, &generated, &mask);
+        // Deep inside → generated exactly.
+        assert_eq!(out.get_pixel(5, 5).0, [200, 100, 50, 255], "inside = generated");
+        // Outside the region → base pixel-identical (the registration guarantee).
+        assert_eq!(out.get_pixel(0, 0).0, [10, 20, 30, 255], "corner = base");
+        assert_eq!(out.get_pixel(9, 9).0, [10, 20, 30, 255], "far corner = base");
+        assert_eq!(out.get_pixel(1, 5).0, [10, 20, 30, 255], "left of region = base");
+        // The edit mask is transparent inside the region (regenerate), opaque outside (preserve).
+        let em = edit_mask_png(&mask);
+        assert!(em.get_pixel(5, 5).0[3] < 8, "region → transparent (editable)");
+        assert_eq!(em.get_pixel(0, 0).0[3], 255, "outside → opaque (preserved)");
     }
 }

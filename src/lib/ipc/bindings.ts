@@ -311,6 +311,11 @@ export const commands = {
 	 */
 	studioAiDraftClip: (gameId: string, assetKey: string, name: string, brief: string) => typedError<Clip, string>(__TAURI_INVOKE("studio_ai_draft_clip", { gameId, assetKey, name, brief })),
 	/**
+	 *  Higher-quality draft on demand (the "Polish" button): best-of-N candidates ranked by a
+	 *  deterministic score, then a vision critic picks the most tasteful/apt one.
+	 */
+	studioAiPolishClip: (gameId: string, assetKey: string, name: string, brief: string, candidates: number) => typedError<Clip, string>(__TAURI_INVOKE("studio_ai_polish_clip", { gameId, assetKey, name, brief, candidates })),
+	/**
 	 *  AI breakdown keys between two times of a clip. Takes the clip from the frontend
 	 *  (unsaved edits included) and returns the updated clip.
 	 */
@@ -321,6 +326,13 @@ export const commands = {
 	 *  or recut refreshes it.
 	 */
 	studioSetMesh: (gameId: string, assetKey: string, partId: string, enabled: boolean, cells: number) => typedError<StudioDoc, string>(__TAURI_INVOKE("studio_set_mesh", { gameId, assetKey, partId, enabled, cells })),
+	/**
+	 *  Bake a looping 2.5D depth-turn into a mesh-deform clip for a part. Estimates a relief map
+	 *  (Depth-Anything), builds an UNWEIGHTED grid mesh, and projects it through a pinhole camera
+	 *  across a yaw/pitch sweep — the per-frame offsets become a Spine `deform` timeline that plays
+	 *  on the stock runtime with no custom code. Sets the part's slot to the (unweighted) mesh.
+	 */
+	studioBakeTurn: (gameId: string, assetKey: string, partId: string, clipName: string, params: TurnParams, density: number) => typedError<StudioDoc, string>(__TAURI_INVOKE("studio_bake_turn", { gameId, assetKey, partId, clipName, params, density })),
 	/**
 	 *  Save baked clip frames (PNG data URLs from the real runtime) as a spritesheet +
 	 *  metadata under `studio/export/sheets/` — the fallback for non-Spine consumers.
@@ -333,6 +345,20 @@ export const commands = {
 	 *  own bone — animatable, physics-able, reorderable like any other part.
 	 */
 	studioGenerateFx: (gameId: string, assetKey: string, name: string, brief: string) => typedError<StudioDoc, string>(__TAURI_INVOKE("studio_generate_fx", { gameId, assetKey, name, brief })),
+	/**
+	 *  Add an alternate attachment to a slot by importing a PNG (data URL). The image is scaled to
+	 *  the host part's box so it overlays the base, then trimmed and registered as a swap option.
+	 */
+	studioAddAlternate: (gameId: string, assetKey: string, hostPartId: string, name: string, pngDataUrl: string) => typedError<StudioDoc, string>(__TAURI_INVOKE("studio_add_alternate", { gameId, assetKey, hostPartId, name, pngDataUrl })),
+	/**
+	 *  Add an alternate attachment by GENERATING a variant of the host part with gpt-image-2. The
+	 *  vision model locates the sub-region to change from the prompt, gpt-image regenerates ONLY
+	 *  that (masked) region, and we composite the base pixel-identical everywhere else — so the
+	 *  alternate (closed eyes, open mouth, lit gem) registers PERFECTLY with the base, no drift.
+	 */
+	studioGenerateAlternate: (gameId: string, assetKey: string, hostPartId: string, name: string, prompt: string) => typedError<StudioDoc, string>(__TAURI_INVOKE("studio_generate_alternate", { gameId, assetKey, hostPartId, name, prompt })),
+	/**  Remove an alternate attachment from a slot (and drop the now-orphan part + its texture). */
+	studioRemoveAlternate: (gameId: string, assetKey: string, hostPartId: string, altId: string) => typedError<StudioDoc, string>(__TAURI_INVOKE("studio_remove_alternate", { gameId, assetKey, hostPartId, altId })),
 	/**
 	 *  Open (or create) the parallax layers for an asset. On first open the active processed
 	 *  variation is snapshotted to `layers/source.png` and a 4-band doc is seeded
@@ -960,6 +986,11 @@ export type Part = {
 	 *  auto-rigged as a mesh on a bone chain with sway physics, rather than a rigid quad.
 	 */
 	deformable?: boolean,
+	/**
+	 *  This part exists only as an alternate attachment on a host slot (blink/swap art) — it is
+	 *  packed into the atlas and registered in the skin, but never gets its own slot or bone.
+	 */
+	attachmentOnly?: boolean,
 };
 
 export type PartProposal = {
@@ -1307,6 +1338,11 @@ export type Slot = {
 	 *  layers generated on black become pure light.
 	 */
 	blend?: BlendMode,
+	/**
+	 *  Part-ids of alternate attachments selectable on this slot over time (EYES_CLOSED, mouth
+	 *  shapes…). A `SlotAttachment` timeline indexes `[part_id, ...alternates]`.
+	 */
+	alternates?: string[],
 };
 
 /**  Which processed variation the studio source was snapshotted from. */
@@ -1470,15 +1506,26 @@ export type Timeline = {
 
 export type TimelineTarget = 
 /**  Degrees, offset from setup pose. */
-({ boneRotate: string }) & { boneScale?: never; boneTranslate?: never; slotAlpha?: never; slotColor?: never } | 
+({ boneRotate: string }) & { boneScale?: never; boneTranslate?: never; slotAlpha?: never; slotAttachment?: never; slotColor?: never; slotDeform?: never } | 
 /**  Pixels (source scale), offset from setup pose. `v = [x, y]`. */
-({ boneTranslate: string }) & { boneRotate?: never; boneScale?: never; slotAlpha?: never; slotColor?: never } | 
+({ boneTranslate: string }) & { boneRotate?: never; boneScale?: never; slotAlpha?: never; slotAttachment?: never; slotColor?: never; slotDeform?: never } | 
 /**  Multiplier of setup scale. `v = [x, y]`. */
-({ boneScale: string }) & { boneRotate?: never; boneTranslate?: never; slotAlpha?: never; slotColor?: never } | 
+({ boneScale: string }) & { boneRotate?: never; boneTranslate?: never; slotAlpha?: never; slotAttachment?: never; slotColor?: never; slotDeform?: never } | 
 /**  Absolute alpha 0..1 on a slot. */
-({ slotAlpha: string }) & { boneRotate?: never; boneScale?: never; boneTranslate?: never; slotColor?: never } | 
+({ slotAlpha: string }) & { boneRotate?: never; boneScale?: never; boneTranslate?: never; slotAttachment?: never; slotColor?: never; slotDeform?: never } | 
 /**  Absolute RGB tint 0..1 on a slot (win flashes, glows, near-miss tints). `v = [r, g, b]`. */
-({ slotColor: string }) & { boneRotate?: never; boneScale?: never; boneTranslate?: never; slotAlpha?: never };
+({ slotColor: string }) & { boneRotate?: never; boneScale?: never; boneTranslate?: never; slotAlpha?: never; slotAttachment?: never; slotDeform?: never } | 
+/**
+ *  Per-vertex mesh offsets over time on a slot's mesh attachment (2.5D turn, ripple).
+ *  `v = [dx0, dy0, dx1, dy1, …]`, length `2 × vertex_count`, source-px (y-down) deltas.
+ *  GENERATED ONLY (turn baker / procedural deform) — never hand-authored per vertex.
+ */
+({ slotDeform: string }) & { boneRotate?: never; boneScale?: never; boneTranslate?: never; slotAlpha?: never; slotAttachment?: never; slotColor?: never } | 
+/**
+ *  Active attachment on a slot over time (blink, mouth shapes, show/hide). `v = [index]`
+ *  into `[part_id, ...slot.alternates]`; `index == HIDE_INDEX` hides the slot.
+ */
+({ slotAttachment: string }) & { boneRotate?: never; boneScale?: never; boneTranslate?: never; slotAlpha?: never; slotColor?: never; slotDeform?: never };
 
 /**
  *  A tonal band: where an asset's median HSV value (median of max(r,g,b) over
@@ -1537,6 +1584,27 @@ export type Transform = {
 	scale: number | null,
 	/**  Degrees, clockwise. */
 	rotation: number | null,
+};
+
+/**  Knobs for a generated turn clip. All have sane defaults; the UI exposes them as sliders. */
+export type TurnParams = {
+	/**  Peak yaw (left↔right turn) in degrees. */
+	yawAmp?: number | null,
+	/**  Peak pitch (up↕down tilt) in degrees. */
+	pitchAmp?: number | null,
+	/**  Surface relief as a fraction of the part's long side — how far near/far pixels sit in Z. */
+	depth?: number | null,
+	/**  Pinhole focal length as a multiple of the long side; larger = weaker perspective. */
+	lens?: number | null,
+	/**  Whole cycles over the clip (kept integral so the loop closes seamlessly). */
+	cycles?: number | null,
+	/**  Clip duration in seconds. */
+	duration?: number | null,
+	/**
+	 *  Pin the silhouette (0 = off, 1 = strong): attenuates deform near transparent edges so the
+	 *  outline doesn't tear/shear on strong tilts. The interior keeps its full turn.
+	 */
+	edgePin?: number | null,
 };
 
 /**

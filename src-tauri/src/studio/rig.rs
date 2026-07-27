@@ -522,11 +522,11 @@ mod tests {
         doc.parts = vec![
             crate::studio::doc::Part {
                 id: "torso".into(), name: "torso".into(), prompts: vec![], bbox: None,
-                mask_hash: None, completed_hash: None, completed_bbox: None, texture: Default::default(), deformable: false,
+                mask_hash: None, completed_hash: None, completed_bbox: None, texture: Default::default(), deformable: false, attachment_only: false,
             },
             crate::studio::doc::Part {
                 id: "arm".into(), name: "arm".into(), prompts: vec![], bbox: None,
-                mask_hash: None, completed_hash: None, completed_bbox: None, texture: Default::default(), deformable: false,
+                mask_hash: None, completed_hash: None, completed_bbox: None, texture: Default::default(), deformable: false, attachment_only: false,
             },
         ];
         let doc = apply(doc, &a, &tree);
@@ -555,7 +555,7 @@ mod tests {
         let mk = |id: &str, deformable: bool| crate::studio::doc::Part {
             id: id.into(), name: id.into(), prompts: vec![], bbox: None,
             mask_hash: None, completed_hash: None, completed_bbox: None,
-            texture: Default::default(), deformable,
+            texture: Default::default(), deformable, attachment_only: false,
         };
         // The elongated "arm" stands in for a floppy tail/cape.
         doc.parts = vec![mk("torso", false), mk("arm", true)];

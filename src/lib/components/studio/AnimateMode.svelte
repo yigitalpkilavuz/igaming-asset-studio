@@ -235,7 +235,16 @@
     if ("boneTranslate" in target) return ["x px", "y px"];
     if ("boneScale" in target) return ["scale x", "scale y"];
     if ("slotColor" in target) return ["r", "g", "b"];
+    if ("slotAttachment" in target) return ["attachment"];
+    if ("slotDeform" in target) return []; // generated — no scalar fields
     return ["alpha"];
+  }
+
+  /** The attachment options for a swap timeline: `[part_id, ...alternates]`. */
+  function attachmentNames(target: TimelineTarget): string[] {
+    if (!("slotAttachment" in target)) return [];
+    const slot = doc.slots.find((s) => s.name === target.slotAttachment);
+    return slot ? [slot.partId, ...(slot.alternates ?? [])] : [];
   }
 
   /** Selected slot-color key ↔ a `#rrggbb` swatch (values are 0..1). */
@@ -387,24 +396,39 @@
     commit();
   }
 
+  function applyDrafted(result: Clip) {
+    stashClip(result.id);
+    const idx = doc.clips.findIndex((c) => c.id === result.id);
+    if (idx >= 0) doc.clips[idx] = result;
+    else doc.clips.push(result);
+    activeClipId = result.id;
+    selection = null;
+    time = 0;
+    playing = true;
+    commit();
+  }
   async function draftClip() {
     const name = (aiName.trim() || clip?.name || "idle").trim();
     aiBusy = true;
     aiMsg = `Drafting "${name}"…`;
     try {
-      const result = await unwrap(
-        commands.studioAiDraftClip(gameId, assetKey, name, aiBrief.trim()),
-      );
-      stashClip(result.id);
-      const idx = doc.clips.findIndex((c) => c.id === result.id);
-      if (idx >= 0) doc.clips[idx] = result;
-      else doc.clips.push(result);
-      activeClipId = result.id;
-      selection = null;
-      time = 0;
-      playing = true;
+      const result = await unwrap(commands.studioAiDraftClip(gameId, assetKey, name, aiBrief.trim()));
+      applyDrafted(result);
       aiMsg = `Drafted "${result.name}" — ${result.timelines.length} tracks. Refine or Revert.`;
-      commit();
+    } catch (e) {
+      aiMsg = e instanceof Error ? e.message : String(e);
+    } finally {
+      aiBusy = false;
+    }
+  }
+  async function polishClip() {
+    const name = (aiName.trim() || clip?.name || "idle").trim();
+    aiBusy = true;
+    aiMsg = `Polishing "${name}" — drafting candidates + picking the best…`;
+    try {
+      const result = await unwrap(commands.studioAiPolishClip(gameId, assetKey, name, aiBrief.trim(), 3));
+      applyDrafted(result);
+      aiMsg = `Polished "${result.name}" — best of 3, ${result.timelines.length} tracks. Refine or Revert.`;
     } catch (e) {
       aiMsg = e instanceof Error ? e.message : String(e);
     } finally {
@@ -495,7 +519,7 @@
         {bundle}
         clip={clip?.name ?? null}
         {playing}
-        {loop}
+        loop={loop && (clip?.looping ?? true)}
         time={playing ? null : time}
         {onionTimes}
         {speed}
@@ -546,39 +570,63 @@
             />
           </label>
         {/if}
-        {#each keyValueLabel(selectedKey.tl.target) as lbl, ci (lbl)}
+        {#if "slotAttachment" in selectedKey.tl.target}
           <label class="field">
-            <span class="muted tiny">{lbl}</span>
-            <input
-              type="number"
-              step={"slotColor" in selectedKey.tl.target ? 0.05 : 0.1}
-              value={selectedKey.k.v[ci] ?? 0}
+            <span class="muted tiny">show attachment</span>
+            <select
+              value={String(Math.round(selectedKey.k.v[0] ?? 0))}
               onchange={(e) => {
-                selectedKey!.k.v[ci] = +e.currentTarget.value || 0;
+                selectedKey!.k.v[0] = +e.currentTarget.value;
                 commit();
               }}
-            />
-          </label>
-        {/each}
-        <label class="field">
-          <span class="muted tiny">ease out</span>
-          <select value={curveKind(selectedKey.k.curve)} onchange={(e) => setCurveKind(e.currentTarget.value)}>
-            <option value="linear">linear</option>
-            <option value="bezier">bezier</option>
-            <option value="stepped">stepped</option>
-          </select>
-        </label>
-        {#if curveKind(selectedKey.k.curve) === "bezier"}
-          {#if keyValueLabel(selectedKey.tl.target).length > 1}
-            <div class="curvecomps">
-              {#each keyValueLabel(selectedKey.tl.target) as lbl, ci (lbl)}
-                <button class="ccomp" class:on={curveComp === ci} onclick={() => (curveComp = ci)}>
-                  {lbl}
-                </button>
+            >
+              <option value="-1">— hidden —</option>
+              {#each attachmentNames(selectedKey.tl.target) as nm, i (nm)}
+                <option value={String(i)}>{nm}{i === 0 ? " (base)" : ""}</option>
               {/each}
-            </div>
+            </select>
+          </label>
+        {:else if "slotDeform" in selectedKey.tl.target}
+          <p class="muted tiny">
+            generated — {(selectedKey.k.v.length / 2) | 0} vertices (2.5D turn / ripple)
+          </p>
+        {:else}
+          {#each keyValueLabel(selectedKey.tl.target) as lbl, ci (lbl)}
+            <label class="field">
+              <span class="muted tiny">{lbl}</span>
+              <input
+                type="number"
+                step={"slotColor" in selectedKey.tl.target ? 0.05 : 0.1}
+                value={selectedKey.k.v[ci] ?? 0}
+                onchange={(e) => {
+                  selectedKey!.k.v[ci] = +e.currentTarget.value || 0;
+                  commit();
+                }}
+              />
+            </label>
+          {/each}
+        {/if}
+        {#if !("slotAttachment" in selectedKey.tl.target) && !("slotDeform" in selectedKey.tl.target)}
+          <label class="field">
+            <span class="muted tiny">ease out</span>
+            <select value={curveKind(selectedKey.k.curve)} onchange={(e) => setCurveKind(e.currentTarget.value)}>
+              <option value="linear">linear</option>
+              <option value="bezier">bezier</option>
+              <option value="stepped">stepped</option>
+            </select>
+          </label>
+          {#if curveKind(selectedKey.k.curve) === "bezier"}
+            {#if keyValueLabel(selectedKey.tl.target).length > 1}
+              <div class="curvecomps">
+                {#each keyValueLabel(selectedKey.tl.target) as lbl, ci (lbl)}
+                  <button class="ccomp" class:on={curveComp === ci} onclick={() => (curveComp = ci)}>
+                    {lbl}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+            <CurveEditor handles={bezierHandles(curveComp)} onchange={(h) => setBezierHandles(curveComp, h)} />
           {/if}
-          <CurveEditor handles={bezierHandles(curveComp)} onchange={(h) => setBezierHandles(curveComp, h)} />
         {/if}
         <button class="ghost danger" onclick={deleteSelectedKey}>Delete key</button>
       {:else if selectedBone}
@@ -612,6 +660,14 @@
     />
     <button onclick={draftClip} disabled={aiBusy || !aiBrief.trim()}>
       {aiBusy ? "Working…" : "Draft clip"}
+    </button>
+    <button
+      class="polish"
+      title="Draft several candidates and let the AI critic pick the best (costs more)"
+      onclick={polishClip}
+      disabled={aiBusy || !aiBrief.trim()}
+    >
+      ✨ Polish
     </button>
     <span class="ai-sep"></span>
     <label class="ai-ib tiny muted">
@@ -778,6 +834,11 @@
     width: 1px;
     align-self: stretch;
     background: var(--line);
+  }
+  .polish {
+    border-color: var(--amber, var(--gold));
+    color: var(--amber, var(--gold));
+    white-space: nowrap;
   }
   .ai-ib {
     display: flex;

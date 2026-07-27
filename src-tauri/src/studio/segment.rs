@@ -424,6 +424,7 @@ pub fn cut_parts(
     doc.slots = doc
         .parts
         .iter()
+        .filter(|part| !part.attachment_only) // alternates ride on a host slot, never their own
         .map(|part| {
             let mut slot = prev_slots.get(&part.id).cloned().unwrap_or_else(|| Slot {
                 name: part.id.clone(),
@@ -431,6 +432,7 @@ pub fn cut_parts(
                 part_id: part.id.clone(),
                 attachment: super::doc::Attachment::Region,
                 blend: super::doc::BlendMode::Normal,
+                alternates: Vec::new(),
             });
             let changed = prev_hashes
                 .get(&part.id)
@@ -445,6 +447,12 @@ pub fn cut_parts(
             slot
         })
         .collect();
+    // Drop alternate references whose part vanished in the re-cut.
+    let live_parts: std::collections::HashSet<&str> =
+        doc.parts.iter().map(|p| p.id.as_str()).collect();
+    for s in &mut doc.slots {
+        s.alternates.retain(|a| live_parts.contains(a.as_str()));
+    }
 
     // Prune physics on bones that no longer exist.
     let bone_names_p: Vec<&str> = doc.bones.iter().map(|b| b.name.as_str()).collect();
@@ -459,7 +467,9 @@ pub fn cut_parts(
             | super::doc::TimelineTarget::BoneTranslate(b)
             | super::doc::TimelineTarget::BoneScale(b) => bone_names.contains(&b.as_str()),
             super::doc::TimelineTarget::SlotAlpha(s)
-            | super::doc::TimelineTarget::SlotColor(s) => slot_names.contains(&s.as_str()),
+            | super::doc::TimelineTarget::SlotColor(s)
+            | super::doc::TimelineTarget::SlotDeform(s)
+            | super::doc::TimelineTarget::SlotAttachment(s) => slot_names.contains(&s.as_str()),
         });
     }
     doc.clips.retain(|c| !c.timelines.is_empty());
@@ -576,6 +586,7 @@ mod tests {
             completed_bbox: None,
             texture: PartTexture::Cut,
             deformable: false,
+            attachment_only: false,
         };
         doc.parts = vec![mk("back"), mk("front")]; // front = higher index = on top
 
@@ -675,6 +686,69 @@ mod tests {
         assert!(!shrunk.bones.iter().any(|b| b.name == "front" || b.name == "front_seg2"));
         assert!(shrunk.physics.is_empty());
         assert!(shrunk.bones.iter().any(|b| b.name == "back"), "unrelated rig intact");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cut_parts_alternates_ride_the_host_slot() {
+        let base = std::env::temp_dir().join(format!("wf_studio_alt_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (gid, key) = ("g", "sym");
+        let (w, h) = (60u32, 60u32);
+
+        // Source + one full-cover mask "face".
+        let source = RgbaImage::from_pixel(w, h, image::Rgba([200, 180, 160, 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        store::write_file(&store::source_path(&base, gid, key), &png.into_inner()).unwrap();
+        let mask = GrayImage::from_pixel(w, h, image::Luma([255]));
+        let mut mb = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageLuma8(mask)
+            .write_to(&mut mb, image::ImageFormat::Png)
+            .unwrap();
+        store::write_file(&store::part_dir(&base, gid, key, "face").join("mask.png"), &mb.into_inner())
+            .unwrap();
+
+        let mut doc = StudioDoc::seed(
+            SourceRef { variation_id: "v".into(), width: w, height: h, sha256: "s".into() },
+            0.0,
+        );
+        doc.parts = vec![
+            Part {
+                id: "face".into(), name: "face".into(), prompts: vec![], bbox: None,
+                mask_hash: None, completed_hash: None, completed_bbox: None,
+                texture: PartTexture::Cut, deformable: false, attachment_only: false,
+            },
+            // Attachment-only alternate: a texture box, no mask, marked attachment_only.
+            Part {
+                id: "eyes_closed".into(), name: "eyes_closed".into(), prompts: vec![],
+                bbox: Some(Rect { x: 10, y: 10, w: 20, h: 10 }),
+                mask_hash: None, completed_hash: None, completed_bbox: None,
+                texture: PartTexture::Cut, deformable: false, attachment_only: true,
+            },
+        ];
+        // Pre-existing wiring: the face slot hosts the eyes_closed alternate.
+        doc.slots = vec![Slot {
+            name: "face".into(), bone: "face".into(), part_id: "face".into(),
+            attachment: crate::studio::doc::Attachment::Region,
+            blend: crate::studio::doc::BlendMode::Normal,
+            alternates: vec!["eyes_closed".into()],
+        }];
+
+        let doc = cut_parts(&base, gid, key, doc).unwrap();
+
+        // The alternate part survives (FX-style passthrough) but gets NO slot of its own…
+        assert!(doc.part("eyes_closed").is_some(), "alternate part kept");
+        assert!(
+            !doc.slots.iter().any(|s| s.part_id == "eyes_closed"),
+            "alternate never spawns its own slot"
+        );
+        // …and the host slot still references it.
+        let face = doc.slots.iter().find(|s| s.name == "face").unwrap();
+        assert_eq!(face.alternates, vec!["eyes_closed".to_string()], "alternate ref preserved");
 
         let _ = std::fs::remove_dir_all(&base);
     }

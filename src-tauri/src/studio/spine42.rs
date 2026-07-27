@@ -140,35 +140,23 @@ pub fn emit(doc: &StudioDoc) -> Result<Value, String> {
         }
         slots_json.push(Value::Object(slot_obj));
 
-        // Texture centre in spine world coords.
-        let (tcx, tcy) = to_spine(
-            bbox.x as f64 + bbox.w as f64 / 2.0,
-            bbox.y as f64 + bbox.h as f64 / 2.0,
-        );
         let att_val = match &s.attachment {
-            Attachment::Region => {
-                let (dx, dy) = (tcx - bone_world.x, tcy - bone_world.y);
-                let (ax, ay) = rotate(dx, dy, -bone_world.rot);
-                let (ax, ay) = (ax / bone_world.sx.max(1e-9), ay / bone_world.sy.max(1e-9));
-                let mut att = Map::new();
-                if ax.abs() > 1e-6 {
-                    att.insert("x".into(), json!(round(ax)));
-                }
-                if ay.abs() > 1e-6 {
-                    att.insert("y".into(), json!(round(ay)));
-                }
-                let arot = norm_angle(-bone_world.rot);
-                if arot.abs() > 1e-6 {
-                    att.insert("rotation".into(), json!(round(arot)));
-                }
-                att.insert("width".into(), json!(bbox.w));
-                att.insert("height".into(), json!(bbox.h));
-                Value::Object(att)
-            }
+            Attachment::Region => region_attachment(bbox, &bone_world, to_spine),
             Attachment::Mesh(m) => mesh_attachment(doc, m, &bone_world, &bone_index, &worlds, to_spine, bbox.w, bbox.h)?,
         };
         let mut by_name = Map::new();
         by_name.insert(part.id.clone(), att_val);
+        // Alternate attachments (blink / mouth shapes / swap) — region-only quads on the SAME
+        // host bone, so a swapped image overlays exactly where the base sits.
+        for alt_id in &s.alternates {
+            let alt = doc
+                .part(alt_id)
+                .ok_or_else(|| format!("slot \"{}\" references unknown alternate part \"{alt_id}\"", s.name))?;
+            let alt_bbox = alt
+                .effective_bbox()
+                .ok_or_else(|| format!("alternate part \"{alt_id}\" has no cut texture yet"))?;
+            by_name.insert(alt_id.clone(), region_attachment(alt_bbox, &bone_world, to_spine));
+        }
         attachments.insert(s.name.clone(), Value::Object(by_name));
     }
 
@@ -198,7 +186,7 @@ pub fn emit(doc: &StudioDoc) -> Result<Value, String> {
     // ── Animations ─────────────────────────────────────────────────────────────
     let mut animations = Map::new();
     for clip in &doc.clips {
-        animations.insert(clip.name.clone(), emit_clip(clip)?);
+        animations.insert(clip.name.clone(), emit_clip(doc, clip, &worlds)?);
     }
 
     Ok(json!({
@@ -294,16 +282,78 @@ fn mesh_attachment(
     }))
 }
 
-/// One clip → the Spine animation object `{ "bones": {...}, "slots": {...} }`.
-fn emit_clip(clip: &super::doc::Clip) -> Result<Value, String> {
+/// A rigid region attachment: the part's texture quad offset from its bone pivot. Shared by the
+/// base attachment and by each alternate (blink/swap), which sit on the same host bone.
+fn region_attachment(
+    bbox: super::doc::Rect,
+    bone_world: &World,
+    to_spine: impl Fn(f64, f64) -> (f64, f64),
+) -> Value {
+    let (tcx, tcy) = to_spine(
+        bbox.x as f64 + bbox.w as f64 / 2.0,
+        bbox.y as f64 + bbox.h as f64 / 2.0,
+    );
+    let (dx, dy) = (tcx - bone_world.x, tcy - bone_world.y);
+    let (ax, ay) = rotate(dx, dy, -bone_world.rot);
+    let (ax, ay) = (ax / bone_world.sx.max(1e-9), ay / bone_world.sy.max(1e-9));
+    let mut att = Map::new();
+    if ax.abs() > 1e-6 {
+        att.insert("x".into(), json!(round(ax)));
+    }
+    if ay.abs() > 1e-6 {
+        att.insert("y".into(), json!(round(ay)));
+    }
+    let arot = norm_angle(-bone_world.rot);
+    if arot.abs() > 1e-6 {
+        att.insert("rotation".into(), json!(round(arot)));
+    }
+    att.insert("width".into(), json!(bbox.w));
+    att.insert("height".into(), json!(bbox.h));
+    Value::Object(att)
+}
+
+/// One clip → the Spine animation object `{ "bones":…, "slots":…, "deform":… }`.
+fn emit_clip(
+    doc: &StudioDoc,
+    clip: &super::doc::Clip,
+    worlds: &HashMap<String, World>,
+) -> Result<Value, String> {
     let mut bones: Map<String, Value> = Map::new();
     let mut slots: Map<String, Value> = Map::new();
+    // deform.<skin>.<slot>.<attachment> = [keys]; the studio uses a single "default" skin.
+    let mut deform_by_slot: Map<String, Value> = Map::new();
 
     for tl in &clip.timelines {
         if tl.keys.is_empty() {
             continue;
         }
-        let comps = tl.target.components();
+        // Non-scalar channels (variable-length vertex arrays / string-valued swaps) take
+        // dedicated emit paths — they don't go through the fixed-arity `emit_keys`.
+        match &tl.target {
+            TimelineTarget::SlotDeform(s) => {
+                let slot = slot_named(doc, clip, s, "deform")?;
+                let keys_json = emit_deform_keys(clip, slot, &tl.keys, worlds)?;
+                // Spine 4.2 nests attachment timelines by type:
+                // deform.<skin>.<slot>.<attachment>.deform = [keys].
+                let mut typed = Map::new();
+                typed.insert("deform".into(), keys_json);
+                let mut by_att = Map::new();
+                by_att.insert(slot.part_id.clone(), Value::Object(typed));
+                deform_by_slot.insert(s.clone(), Value::Object(by_att));
+                continue;
+            }
+            TimelineTarget::SlotAttachment(s) => {
+                let slot = slot_named(doc, clip, s, "attachment")?;
+                let keys_json = emit_attachment_keys(clip, slot, &tl.keys)?;
+                slot_entry(&mut slots, s).insert("attachment".into(), keys_json);
+                continue;
+            }
+            _ => {}
+        }
+        let comps = tl
+            .target
+            .components()
+            .expect("scalar timeline has fixed arity");
         for k in &tl.keys {
             if k.v.len() != comps {
                 return Err(format!(
@@ -326,19 +376,13 @@ fn emit_clip(clip: &super::doc::Clip) -> Result<Value, String> {
                 bone_entry(&mut bones, b).insert("scale".into(), keys_json);
             }
             TimelineTarget::SlotAlpha(s) => {
-                let entry = slots
-                    .entry(s.clone())
-                    .or_insert_with(|| Value::Object(Map::new()));
-                entry
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("alpha".into(), keys_json);
+                slot_entry(&mut slots, s).insert("alpha".into(), keys_json);
             }
             TimelineTarget::SlotColor(s) => {
-                let entry = slots
-                    .entry(s.clone())
-                    .or_insert_with(|| Value::Object(Map::new()));
-                entry.as_object_mut().unwrap().insert("rgb".into(), keys_json);
+                slot_entry(&mut slots, s).insert("rgb".into(), keys_json);
+            }
+            TimelineTarget::SlotDeform(_) | TimelineTarget::SlotAttachment(_) => {
+                unreachable!("deform/attachment handled before scalar emission")
             }
         }
     }
@@ -350,7 +394,148 @@ fn emit_clip(clip: &super::doc::Clip) -> Result<Value, String> {
     if !bones.is_empty() {
         anim.insert("bones".into(), Value::Object(bones));
     }
+    if !deform_by_slot.is_empty() {
+        // 4.2 reads deform/sequence timelines from the animation's "attachments" key
+        // (attachments.<skin>.<slot>.<attachment>.deform) — NOT a top-level "deform".
+        let mut skin = Map::new();
+        skin.insert("default".into(), Value::Object(deform_by_slot));
+        anim.insert("attachments".into(), Value::Object(skin));
+    }
     Ok(Value::Object(anim))
+}
+
+/// Look up a slot by name with a clip-scoped error.
+fn slot_named<'a>(
+    doc: &'a StudioDoc,
+    clip: &super::doc::Clip,
+    name: &str,
+    kind: &str,
+) -> Result<&'a super::doc::Slot, String> {
+    doc.slots
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| format!("clip \"{}\": {kind} timeline on unknown slot \"{name}\"", clip.name))
+}
+
+fn slot_entry<'a>(slots: &'a mut Map<String, Value>, name: &str) -> &'a mut Map<String, Value> {
+    slots
+        .entry(name.to_string())
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .unwrap()
+}
+
+/// Emit a mesh-deform timeline. Each key's `v` holds source-px (y-down) vertex-offset deltas
+/// `[dx0, dy0, …]`; they map into the slot bone's local space via the same linear transform as
+/// the setup mesh MINUS the translation (offsets are deltas): scale · rot(−bone) · yflip.
+fn emit_deform_keys(
+    clip: &super::doc::Clip,
+    slot: &super::doc::Slot,
+    keys: &[Key],
+    worlds: &HashMap<String, World>,
+) -> Result<Value, String> {
+    let mesh = match &slot.attachment {
+        Attachment::Mesh(m) => m,
+        _ => {
+            return Err(format!(
+                "clip \"{}\": deform on slot \"{}\" whose attachment is not a mesh",
+                clip.name, slot.name
+            ))
+        }
+    };
+    let vcount = mesh.vertices.len() / 2;
+    let bw = worlds.get(&slot.bone).ok_or_else(|| {
+        format!(
+            "clip \"{}\": deform slot \"{}\" references unknown bone \"{}\"",
+            clip.name, slot.name, slot.bone
+        )
+    })?;
+
+    let mut out: Vec<Value> = Vec::with_capacity(keys.len());
+    for (i, k) in keys.iter().enumerate() {
+        if k.v.len() != vcount * 2 {
+            return Err(format!(
+                "clip \"{}\": deform key at t={} has {} values, expected {} (2 × {vcount} verts)",
+                clip.name,
+                k.time,
+                k.v.len(),
+                vcount * 2
+            ));
+        }
+        let mut verts: Vec<Value> = Vec::with_capacity(vcount * 2);
+        for vi in 0..vcount {
+            // A·d — y-flip, rotate into bone-local, divide by bone scale. No translation.
+            let (fx, fy) = (k.v[vi * 2], -k.v[vi * 2 + 1]);
+            let (rx, ry) = rotate(fx, fy, -bw.rot);
+            verts.push(json!(round(rx / bw.sx.max(1e-9))));
+            verts.push(json!(round(ry / bw.sy.max(1e-9))));
+        }
+        let mut obj = Map::new();
+        if k.time.abs() > 1e-9 {
+            obj.insert("time".into(), json!(round4(k.time)));
+        }
+        obj.insert("vertices".into(), Value::Array(verts));
+        // A deform key carries a SINGLE interpolation curve (0..1) across all vertices — not the
+        // per-component form of scalar timelines. The generator uses Linear/Stepped in practice.
+        if i + 1 < keys.len() {
+            match &k.curve {
+                Curve::Linear => {}
+                Curve::Stepped => {
+                    obj.insert("curve".into(), json!("stepped"));
+                }
+                Curve::Bezier(h) if h.len() >= 4 => {
+                    let (t0, t1) = (k.time, keys[i + 1].time);
+                    obj.insert(
+                        "curve".into(),
+                        json!([
+                            round4(t0 + h[0] * (t1 - t0)),
+                            round4(h[1]),
+                            round4(t0 + h[2] * (t1 - t0)),
+                            round4(h[3]),
+                        ]),
+                    );
+                }
+                Curve::Bezier(_) => {}
+            }
+        }
+        out.push(Value::Object(obj));
+    }
+    Ok(Value::Array(out))
+}
+
+/// Emit a slot-attachment (swap) timeline. `v[0]` indexes `[part_id, ...slot.alternates]`;
+/// a negative index (`HIDE_INDEX`) emits `null` (the slot shows nothing).
+fn emit_attachment_keys(
+    clip: &super::doc::Clip,
+    slot: &super::doc::Slot,
+    keys: &[Key],
+) -> Result<Value, String> {
+    let names: Vec<&str> = std::iter::once(slot.part_id.as_str())
+        .chain(slot.alternates.iter().map(|a| a.as_str()))
+        .collect();
+    let mut out: Vec<Value> = Vec::with_capacity(keys.len());
+    for k in keys {
+        let idx = k.v.first().copied().unwrap_or(0.0).round() as i64;
+        let mut obj = Map::new();
+        if k.time.abs() > 1e-9 {
+            obj.insert("time".into(), json!(round4(k.time)));
+        }
+        if idx < 0 {
+            obj.insert("name".into(), Value::Null);
+        } else {
+            let name = names.get(idx as usize).copied().ok_or_else(|| {
+                format!(
+                    "clip \"{}\": attachment key index {idx} out of range for slot \"{}\" ({} attachments)",
+                    clip.name,
+                    slot.name,
+                    names.len()
+                )
+            })?;
+            obj.insert("name".into(), json!(name));
+        }
+        out.push(Value::Object(obj));
+    }
+    Ok(Value::Array(out))
 }
 
 fn bone_entry<'a>(bones: &'a mut Map<String, Value>, name: &str) -> &'a mut Map<String, Value> {
@@ -393,6 +578,9 @@ fn emit_keys(keys: &[Key], comps: usize, target: &TimelineTarget) -> Result<Valu
             TimelineTarget::BoneScale(_) => {
                 obj.insert("x".into(), json!(round4(k.v[0] as f64)));
                 obj.insert("y".into(), json!(round4(k.v[1] as f64)));
+            }
+            TimelineTarget::SlotDeform(_) | TimelineTarget::SlotAttachment(_) => {
+                unreachable!("non-scalar timeline routed to emit_keys")
             }
         }
         // Curve OUT of this key (not on the last key).
@@ -716,5 +904,136 @@ mod tests {
         let mut doc = StudioDoc::seed(source(), 0.0);
         doc.bones.push(Bone::new("orphan", Some("ghost".into()), 0.0, 0.0));
         assert!(emit(&doc).is_err());
+    }
+
+    /// A 2-vertex mesh on the "all" slot, whose "body" bone is unrotated/unit-scale by default.
+    fn mesh_doc() -> StudioDoc {
+        let mut doc = StudioDoc::seed(source(), 0.0);
+        doc.slots[0].attachment = Attachment::Mesh(MeshData {
+            vertices: vec![400.0, 300.0, 600.0, 500.0],
+            uvs: vec![0.0, 0.0, 1.0, 1.0],
+            triangles: vec![0, 1, 0],
+            hull: 2,
+            weights: None,
+        });
+        doc
+    }
+
+    fn deform_clip(keys: Vec<Key>) -> Clip {
+        Clip {
+            id: "c".into(),
+            name: "c".into(),
+            duration: 1.0,
+            looping: false,
+            timelines: vec![Timeline { target: TimelineTarget::SlotDeform("all".into()), keys }],
+        }
+    }
+
+    #[test]
+    fn deform_offsets_unrotated_bone_only_flip_y() {
+        let mut doc = mesh_doc();
+        doc.clips = vec![deform_clip(vec![
+            Key { time: 0.0, v: vec![0.0, 0.0, 0.0, 0.0], curve: Curve::Linear },
+            Key { time: 0.5, v: vec![10.0, 20.0, -4.0, 6.0], curve: Curve::Linear },
+        ])];
+        let v = emit(&doc).unwrap();
+        let keys = v["animations"]["c"]["attachments"]["default"]["all"]["all"]["deform"]
+            .as_array()
+            .unwrap();
+        // Setup-pose key (all zero) — time omitted, full vertex array emitted.
+        assert!(keys[0].get("time").is_none());
+        assert_eq!(keys[0]["vertices"], json!([0.0, 0.0, 0.0, 0.0]));
+        // Deltas on an unrotated unit-scale bone → just (dx, -dy).
+        assert_eq!(keys[1]["time"], json!(0.5));
+        assert_eq!(keys[1]["vertices"], json!([10.0, -20.0, -4.0, -6.0]));
+    }
+
+    #[test]
+    fn deform_offsets_rotated_scaled_bone_apply_full_linear_map() {
+        let mut doc = mesh_doc();
+        // body: 90° CCW, non-uniform scale (2, 1). A = diag(1/2,1)·Rot(-90)·diag(1,-1).
+        doc.bones[1].rotation = 90.0;
+        doc.bones[1].scale_x = 2.0;
+        doc.bones[1].scale_y = 1.0;
+        doc.clips = vec![deform_clip(vec![
+            Key { time: 0.0, v: vec![0.0, 0.0, 0.0, 0.0], curve: Curve::Linear },
+            Key { time: 0.5, v: vec![10.0, 20.0, -4.0, 6.0], curve: Curve::Linear },
+        ])];
+        let v = emit(&doc).unwrap();
+        let keys = v["animations"]["c"]["attachments"]["default"]["all"]["all"]["deform"]
+            .as_array()
+            .unwrap();
+        // d=(10,20): yflip→(10,-20); rot(-90)→(-20,-10); /scale→(-10,-10).
+        // d=(-4,6):  yflip→(-4,-6);  rot(-90)→(-6,4);    /scale→(-3,4).
+        assert_eq!(keys[1]["vertices"], json!([-10.0, -10.0, -3.0, 4.0]));
+    }
+
+    #[test]
+    fn deform_key_vertex_count_mismatch_errors() {
+        let mut doc = mesh_doc();
+        // Mesh has 2 verts (4 floats); a 2-float key is one vertex short.
+        doc.clips = vec![deform_clip(vec![Key {
+            time: 0.0,
+            v: vec![1.0, 2.0],
+            curve: Curve::Linear,
+        }])];
+        assert!(emit(&doc).is_err());
+    }
+
+    #[test]
+    fn deform_on_region_slot_errors() {
+        let mut doc = StudioDoc::seed(source(), 0.0); // "all" is Region by default
+        doc.clips = vec![deform_clip(vec![Key {
+            time: 0.0,
+            v: vec![],
+            curve: Curve::Linear,
+        }])];
+        assert!(emit(&doc).is_err());
+    }
+
+    #[test]
+    fn attachment_timeline_names_alternates_and_hides() {
+        let mut doc = StudioDoc::seed(source(), 0.0);
+        doc.parts.push(Part {
+            id: "eyes_closed".into(),
+            name: "eyes_closed".into(),
+            prompts: vec![],
+            bbox: Some(Rect { x: 0, y: 0, w: 100, h: 100 }),
+            mask_hash: None,
+            completed_hash: None,
+            completed_bbox: None,
+            texture: PartTexture::Cut,
+            deformable: false,
+            attachment_only: true,
+        });
+        doc.slots[0].alternates = vec!["eyes_closed".into()];
+        doc.clips = vec![Clip {
+            id: "c".into(),
+            name: "c".into(),
+            duration: 1.0,
+            looping: false,
+            timelines: vec![Timeline {
+                target: TimelineTarget::SlotAttachment("all".into()),
+                keys: vec![
+                    Key { time: 0.0, v: vec![0.0], curve: Curve::Stepped },
+                    Key { time: 0.1, v: vec![1.0], curve: Curve::Stepped },
+                    Key { time: 0.2, v: vec![HIDE_INDEX], curve: Curve::Stepped },
+                ],
+            }],
+        }];
+        let v = emit(&doc).unwrap();
+        // Skin registers BOTH the base and the alternate under the slot.
+        let atts = v["skins"][0]["attachments"]["all"].as_object().unwrap();
+        assert!(atts.contains_key("all"), "base attachment present");
+        assert!(atts.contains_key("eyes_closed"), "alternate registered in skin");
+        // Timeline maps index → attachment name, negative → null (hidden).
+        let keys = v["animations"]["c"]["slots"]["all"]["attachment"]
+            .as_array()
+            .unwrap();
+        assert_eq!(keys[0]["name"], json!("all"));
+        assert!(keys[0].get("time").is_none());
+        assert_eq!(keys[1]["name"], json!("eyes_closed"));
+        assert_eq!(keys[1]["time"], json!(0.1));
+        assert_eq!(keys[2]["name"], Value::Null);
     }
 }

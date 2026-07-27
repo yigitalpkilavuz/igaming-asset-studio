@@ -54,7 +54,9 @@
   let customName = $state("");
   let trackAddOpen = $state(false);
   let newBone = $state("");
-  let newChannel = $state<"rotate" | "translate" | "scale" | "alpha" | "color">("rotate");
+  let newChannel = $state<
+    "rotate" | "translate" | "scale" | "alpha" | "color" | "attachment"
+  >("rotate");
   let renaming = $state<string | null>(null);
   let renameVal = $state("");
 
@@ -76,11 +78,15 @@
     if ("boneTranslate" in t) return `${t.boneTranslate} · move`;
     if ("boneScale" in t) return `${t.boneScale} · scale`;
     if ("slotAlpha" in t) return `${t.slotAlpha} · alpha`;
-    return `${(t as { slotColor: string }).slotColor} · color`;
+    if ("slotColor" in t) return `${t.slotColor} · color`;
+    if ("slotDeform" in t) return `${t.slotDeform} · deform`;
+    return `${(t as { slotAttachment: string }).slotAttachment} · swap`;
   }
 
   function components(t: TimelineTarget): number {
     if ("slotColor" in t) return 3;
+    if ("slotAttachment" in t) return 1;
+    if ("slotDeform" in t) return 0; // dynamic (2×verts) — generated, not scalar-edited
     return "boneTranslate" in t || "boneScale" in t ? 2 : 1;
   }
 
@@ -89,6 +95,8 @@
     if ("boneTranslate" in t) return [0, 0];
     if ("slotColor" in t) return [1, 1, 1]; // white = no tint
     if ("slotAlpha" in t) return [1];
+    if ("slotAttachment" in t) return [0]; // base attachment
+    if ("slotDeform" in t) return []; // generated only
     return [0];
   }
 
@@ -191,7 +199,9 @@
             ? { boneScale: newBone }
             : newChannel === "alpha"
               ? { slotAlpha: newBone }
-              : { slotColor: newBone };
+              : newChannel === "attachment"
+                ? { slotAttachment: newBone }
+                : { slotColor: newBone };
     if (clip.timelines.some((tl) => JSON.stringify(tl.target) === JSON.stringify(target))) {
       trackAddOpen = false;
       return;
@@ -335,7 +345,11 @@
                 class:sel={selection?.t === ti && selection?.k === ki}
                 class:stepped={k.curve === "stepped"}
                 style:left={`${(((k.time ?? 0) / duration) * 100).toFixed(3)}%`}
-                title={`t=${(k.time ?? 0).toFixed(2)} v=${k.v.map((x) => (x ?? 0).toFixed(2)).join(",")}`}
+                title={"slotDeform" in tl.target
+                  ? `t=${(k.time ?? 0).toFixed(2)} · deform (${(k.v.length / 2) | 0} verts)`
+                  : "slotAttachment" in tl.target
+                    ? `t=${(k.time ?? 0).toFixed(2)} · #${Math.round(k.v[0] ?? 0)}`
+                    : `t=${(k.time ?? 0).toFixed(2)} v=${k.v.map((x) => (x ?? 0).toFixed(2)).join(",")}`}
                 onpointerdown={(e) => keyDown(e, ti, ki)}
                 onpointermove={keyMove}
                 onpointerup={keyUp}
@@ -353,10 +367,11 @@
             <option value="scale">scale</option>
             <option value="alpha">alpha (slot)</option>
             <option value="color">color (slot)</option>
+            <option value="attachment">swap (slot)</option>
           </select>
           <select bind:value={newBone}>
             <option value="" disabled>target…</option>
-            {#each newChannel === "alpha" || newChannel === "color" ? slotNames : boneNames as n (n)}
+            {#each newChannel === "alpha" || newChannel === "color" || newChannel === "attachment" ? slotNames : boneNames as n (n)}
               <option value={n}>{n}</option>
             {/each}
           </select>

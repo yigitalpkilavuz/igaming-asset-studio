@@ -42,7 +42,15 @@ fn skeleton_summary(doc: &StudioDoc) -> serde_json::Value {
             "length": b.length.round(),
             "depth": depth(&b.name),
         })).collect::<Vec<_>>(),
-        "slots": doc.slots.iter().map(|s| &s.name).collect::<Vec<_>>(),
+        // Each slot's capabilities: `mesh` slots can ripple/deform; slots whose `attachments`
+        // list more than one entry can blink/swap between them.
+        "slots": doc.slots.iter().map(|s| json!({
+            "name": s.name,
+            "mesh": matches!(s.attachment, crate::studio::doc::Attachment::Mesh(_)),
+            "attachments": std::iter::once(s.part_id.clone())
+                .chain(s.alternates.iter().cloned())
+                .collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -100,6 +108,14 @@ fn clamp_values(target: &TimelineTarget, v: &mut [f64], translate_cap: f64) {
                 *c = c.clamp(0.0, 1.0);
             }
         }
+        TimelineTarget::SlotDeform(_) => {
+            for c in v.iter_mut() {
+                *c = c.clamp(-translate_cap, translate_cap);
+            }
+        }
+        TimelineTarget::SlotAttachment(_) => {
+            v[0] = v[0].round();
+        }
     }
 }
 
@@ -118,14 +134,34 @@ struct Msg {
     content: String,
 }
 
-async fn chat_json(api_key: &str, system: &str, user: &str) -> Result<String, String> {
+async fn chat_json(
+    api_key: &str,
+    system: &str,
+    user: &str,
+    image: Option<&[u8]>,
+    temperature: f64,
+) -> Result<String, String> {
+    use base64::Engine;
+    // With an image the user turn becomes multimodal (text + image_url); gpt-4o is vision-capable.
+    let user_content = match image {
+        Some(png) => json!([
+            { "type": "text", "text": user },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png))
+                }
+            },
+        ]),
+        None => json!(user),
+    };
     let body = json!({
         "model": MODEL,
         "messages": [
             { "role": "system", "content": system },
-            { "role": "user", "content": user },
+            { "role": "user", "content": user_content },
         ],
-        "temperature": 0.7,
+        "temperature": temperature,
         "response_format": { "type": "json_object" },
     });
     let resp = reqwest::Client::new()
@@ -158,12 +194,13 @@ pub async fn draft_clip(
     doc: &StudioDoc,
     name: &str,
     brief: &str,
+    image: Option<&[u8]>,
 ) -> Result<Clip, String> {
     let user = format!(
         "Skeleton:\n{}\n\nClip name: {name}\nBrief: {brief}",
         skeleton_summary(doc)
     );
-    let content = chat_json(api_key, super::motion_gen::PLAN_SYSTEM, &user).await?;
+    let content = chat_json(api_key, super::motion_gen::PLAN_SYSTEM, &user, image, 0.7).await?;
     let plan: super::motion_gen::PlanDraft =
         serde_json::from_str(&content).map_err(|e| format!("could not parse motion plan: {e}"))?;
     let slug: String = name
@@ -181,13 +218,122 @@ pub async fn draft_clip(
     Ok(clip)
 }
 
+/// Heuristic quality score for a rendered clip — a pre-filter + tiebreak before the critic.
+/// Rewards tasteful coverage and channel variety; penalizes over-busy plans.
+fn score_clip(clip: &Clip, doc: &StudioDoc) -> f64 {
+    let animatable = doc.bones.iter().filter(|b| b.parent.is_some()).count() + doc.slots.len();
+    let moved: std::collections::HashSet<&str> =
+        clip.timelines.iter().map(|t| target_parts(&t.target).0).collect();
+    let coverage = if animatable == 0 { 0.0 } else { moved.len() as f64 / animatable as f64 };
+    // Peak around ~40% coverage (a few tasteful parts move), falling off toward none / everything.
+    let cov_score = 1.0 - ((coverage - 0.4).abs() / 0.4).min(1.0);
+    let channels: std::collections::HashSet<&str> =
+        clip.timelines.iter().map(|t| target_parts(&t.target).1).collect();
+    let variety = (channels.len() as f64 / 4.0).min(1.0);
+    let busy_penalty = (clip.timelines.len() as f64 - 6.0).max(0.0) * 0.1;
+    (cov_score * 0.6 + variety * 0.4 - busy_penalty).max(0.0)
+}
+
+/// Vision critic: shown the symbol + each candidate's move list, pick the most tasteful/apt index.
+async fn critic_pick(
+    api_key: &str,
+    name: &str,
+    brief: &str,
+    image: Option<&[u8]>,
+    clips: &[Clip],
+) -> Option<usize> {
+    const SYS: &str = "You are a senior slot-game animator reviewing candidate motion plans for a \
+        symbol. You are shown the symbol image and several candidate plans (each a list of \
+        target·channel moves). Pick the index of the MOST tasteful and APT plan: motion that suits \
+        the materials you SEE, reads as premium (not busy or cartoonish), and fits the brief and \
+        clip name. Return ONLY this JSON object: {\"pick\": <index>}.";
+    let mut desc = String::new();
+    for (i, c) in clips.iter().enumerate() {
+        let moves: Vec<String> = c
+            .timelines
+            .iter()
+            .map(|t| {
+                let (n, ch) = target_parts(&t.target);
+                format!("{n}·{ch}")
+            })
+            .collect();
+        desc.push_str(&format!("Plan {i}: {}\n", moves.join(", ")));
+    }
+    let user = format!("Clip: {name}\nBrief: {brief}\nCandidates:\n{desc}");
+    let content = chat_json(api_key, SYS, &user, image, 0.2).await.ok()?;
+    #[derive(Deserialize)]
+    struct Pick {
+        pick: usize,
+    }
+    serde_json::from_str::<Pick>(&content).ok().map(|p| p.pick)
+}
+
+/// Best-of-N draft: sample `candidates` plans at varied temperature (with vision), rank them by
+/// the deterministic score, then let the vision critic pick the winner among the top few.
+pub async fn draft_clip_polished(
+    api_key: &str,
+    doc: &StudioDoc,
+    name: &str,
+    brief: &str,
+    image: Option<&[u8]>,
+    candidates: u32,
+) -> Result<Clip, String> {
+    let n = candidates.clamp(2, 5) as usize;
+    let temps = [0.5, 0.9, 0.7, 0.6, 0.85];
+    let user = format!(
+        "Skeleton:\n{}\n\nClip name: {name}\nBrief: {brief}",
+        skeleton_summary(doc)
+    );
+    let slug: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    let id = if slug.is_empty() { "clip".to_string() } else { slug };
+
+    let mut clips: Vec<Clip> = Vec::new();
+    for i in 0..n {
+        let Ok(content) =
+            chat_json(api_key, super::motion_gen::PLAN_SYSTEM, &user, image, temps[i % temps.len()])
+                .await
+        else {
+            continue;
+        };
+        if let Ok(plan) = serde_json::from_str::<super::motion_gen::PlanDraft>(&content) {
+            let clip = super::motion_gen::render_plan(doc, &id, name, plan);
+            if !clip.timelines.is_empty() {
+                clips.push(clip);
+            }
+        }
+    }
+    if clips.is_empty() {
+        return Err("the model produced no usable motion — try a more specific brief".into());
+    }
+    clips.sort_by(|a, b| {
+        score_clip(b, doc)
+            .partial_cmp(&score_clip(a, doc))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    clips.truncate(3);
+    if clips.len() == 1 {
+        return Ok(clips.into_iter().next().unwrap());
+    }
+    let k = critic_pick(api_key, name, brief, image, &clips)
+        .await
+        .unwrap_or(0)
+        .min(clips.len() - 1);
+    Ok(clips.into_iter().nth(k).unwrap())
+}
+
 // ── In-betweens ────────────────────────────────────────────────────────────────
 
 /// Linear evaluation of a timeline at time t (pose sampling for the prompt).
 fn value_at(tl: &Timeline, t: f64) -> Vec<f64> {
     let keys = &tl.keys;
     if keys.is_empty() {
-        return vec![default_component(&tl.target, 0); tl.target.components()];
+        return vec![default_component(&tl.target, 0); tl.target.components().unwrap_or(0)];
     }
     if t <= keys[0].time {
         return keys[0].v.clone();
@@ -216,6 +362,8 @@ fn target_parts(t: &TimelineTarget) -> (&str, &'static str) {
         TimelineTarget::BoneScale(b) => (b, "scale"),
         TimelineTarget::SlotAlpha(s) => (s, "alpha"),
         TimelineTarget::SlotColor(s) => (s, "color"),
+        TimelineTarget::SlotDeform(s) => (s, "deform"),
+        TimelineTarget::SlotAttachment(s) => (s, "attachment"),
     }
 }
 
@@ -277,7 +425,7 @@ track where they help; skip tracks that should interpolate plainly."
         "Pose A at t={from:.3}s, pose B at t={to:.3}s. Tracks:\n{}",
         serde_json::Value::Array(poses)
     );
-    let content = chat_json(api_key, &system, &user).await?;
+    let content = chat_json(api_key, &system, &user, None, 0.7).await?;
     let draft: InbetweenDraft =
         serde_json::from_str(&content).map_err(|e| format!("could not parse in-betweens: {e}"))?;
     Ok(apply_inbetweens(doc, clip, from, to, draft.keys))
@@ -305,7 +453,9 @@ fn apply_inbetweens(
             continue;
         };
         let time = k.time.clamp(from + eps, to - eps);
-        let comps = tl.target.components();
+        let Some(comps) = tl.target.components() else {
+            continue; // deform/attachment channels aren't refined by in-betweens
+        };
         let mut v: Vec<f64> = (0..comps)
             .map(|i| k.value.get(i).copied().unwrap_or_else(|| default_component(&tl.target, i)))
             .collect();
@@ -416,6 +566,7 @@ mod tests {
                     part_id: p.id.clone(),
                     attachment: Default::default(),
                     blend: Default::default(),
+                    alternates: Default::default(),
                 })
                 .collect();
         }
@@ -424,7 +575,7 @@ mod tests {
             .unwrap()
             .filter(|k| !k.is_empty())
             .expect("no OpenAI key in the dev secret store");
-        let clip = tauri::async_runtime::block_on(draft_clip(&api_key, &doc, "idle", &brief)).unwrap();
+        let clip = tauri::async_runtime::block_on(draft_clip(&api_key, &doc, "idle", &brief, None)).unwrap();
 
         eprintln!(
             "=== plan → clip \"{}\"  dur={:.2}s  loop={}  ({} tracks) ===",
@@ -461,7 +612,7 @@ mod tests {
             }
             let samples: Vec<Vec<f64>> =
                 (0..=n).map(|s| value_at(tl, clip.duration * s as f64 / n as f64)).collect();
-            for c in 0..tl.target.components() {
+            for c in 0..tl.target.components().unwrap_or(0) {
                 let vals: Vec<f64> = samples.iter().map(|s| s[c]).collect();
                 let (lo, hi) = vals.iter().fold((f64::MAX, f64::MIN), |(a, b), &v| (a.min(v), b.max(v)));
                 let span = (hi - lo).max(1e-6);
@@ -493,5 +644,83 @@ mod tests {
         assert_eq!(value_at(&tl, 1.0), vec![5.0, -10.0]);
         assert_eq!(value_at(&tl, -1.0), vec![0.0, 0.0]);
         assert_eq!(value_at(&tl, 9.0), vec![10.0, -20.0]);
+    }
+
+    #[test]
+    fn score_prefers_tasteful_over_busy() {
+        let mut d = StudioDoc::seed(
+            SourceRef { variation_id: "v".into(), width: 400, height: 400, sha256: "s".into() },
+            0.0,
+        );
+        for i in 0..6 {
+            d.bones.push(crate::studio::doc::Bone::new(format!("b{i}"), Some("root".into()), 10.0, 10.0));
+        }
+        let rot = |b: &str| Timeline {
+            target: TimelineTarget::BoneRotate(b.into()),
+            keys: vec![Key { time: 0.0, v: vec![0.0], curve: Curve::Linear }],
+        };
+        // A few parts move, across two channels.
+        let tasteful = Clip {
+            id: "a".into(), name: "a".into(), duration: 2.0, looping: true,
+            timelines: vec![
+                rot("b0"),
+                rot("b1"),
+                Timeline {
+                    target: TimelineTarget::SlotColor("all".into()),
+                    keys: vec![Key { time: 0.0, v: vec![1.0, 1.0, 1.0], curve: Curve::Linear }],
+                },
+            ],
+        };
+        // Everything rotates — over-covered, one channel, busy.
+        let busy = Clip {
+            id: "b".into(), name: "b".into(), duration: 2.0, looping: true,
+            timelines: (0..6).map(|i| rot(&format!("b{i}"))).chain([rot("body")]).collect(),
+        };
+        assert!(score_clip(&tasteful, &d) > score_clip(&busy, &d), "tasteful beats busy");
+    }
+
+    /// Env-gated real draft: a doc with a MESH slot (rippleable) + an ALTERNATE (blinkable)
+    /// confirms the director actually reaches for the new primitives given an explicit brief.
+    /// One paid call. Run:
+    ///   WF_DRAFT_NEW=1 cargo test --lib studio::motion::tests::draft_reaches_new_primitives -- --nocapture
+    #[test]
+    fn draft_reaches_new_primitives() {
+        if std::env::var_os("WF_DRAFT_NEW").is_none() {
+            return;
+        }
+        let api_key = crate::secrets::get(crate::secrets::OPENAI_KEY)
+            .unwrap()
+            .filter(|k| !k.is_empty())
+            .expect("no OpenAI key in the dev secret store");
+        let mut doc = StudioDoc::seed(
+            SourceRef { variation_id: "v".into(), width: 400, height: 400, sha256: "s".into() },
+            0.0,
+        );
+        // "all" is a mesh (rippleable) AND carries an alternate (blinkable).
+        doc.slots[0].attachment = crate::studio::doc::Attachment::Mesh(crate::studio::doc::MeshData {
+            vertices: vec![0.0, 0.0, 100.0, 0.0, 50.0, 100.0],
+            uvs: vec![0.0, 0.0, 1.0, 0.0, 0.5, 1.0],
+            triangles: vec![0, 1, 2],
+            hull: 3,
+            weights: None,
+        });
+        doc.slots[0].alternates = vec!["all_closed".into()];
+
+        let brief = "a lively idle: the surface ripples with a soft jelly wobble, and the symbol \
+                     blinks to its alternate now and then";
+        let clip =
+            tauri::async_runtime::block_on(draft_clip(&api_key, &doc, "idle", brief, None)).unwrap();
+
+        eprintln!("=== plan → clip ({} tracks) ===", clip.timelines.len());
+        for tl in &clip.timelines {
+            let (t, ch) = target_parts(&tl.target);
+            eprintln!("  {t:>10} · {ch:<11} {} keys", tl.keys.len());
+        }
+        let has_deform =
+            clip.timelines.iter().any(|t| matches!(t.target, TimelineTarget::SlotDeform(_)));
+        let has_attach =
+            clip.timelines.iter().any(|t| matches!(t.target, TimelineTarget::SlotAttachment(_)));
+        eprintln!("ripple(deform)={has_deform}  blink(attachment)={has_attach}");
+        assert!(has_deform || has_attach, "director reached for at least one new primitive");
     }
 }

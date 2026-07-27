@@ -56,6 +56,7 @@
   /** Bumped when the style anchor changes so the bench chip refreshes. */
   let anchorRev = $state(0);
   let menuOpen = $state(false);
+  let deliverOpen = $state(false);
   let contactOpen = $state(false);
   let setKeys = $state<string[] | null>(null);
   // Every symbol the set composer can include (expanded twins generate solo).
@@ -412,6 +413,7 @@
 
   function closeMenus() {
     menuOpen = false;
+    deliverOpen = false;
     legendOpen = false;
   }
 </script>
@@ -458,10 +460,46 @@
           <button class:on={view === "list"} onclick={() => (view = "list")}>Bench</button>
           <button class:on={view === "grid"} onclick={() => (view = "grid")}>Grid</button>
         </div>
+        {#if view === "grid"}
+          <button onclick={() => (contactOpen = true)} title="every symbol composited at TRUE cell size into the real grid — the only honest way to judge relative scale">
+            Contact sheet
+          </button>
+        {/if}
       {/if}
       <button onclick={() => (blueprintOpen = true)}>Blueprint</button>
       {#if savedId}
-        <button class="gold" onclick={() => (exportOpen = true)}>Export</button>
+        <div class="split">
+          <button
+            class="gold split-main"
+            onclick={() => publish(false)}
+            disabled={publishing}
+            title={publishDir ? `publish ready assets → ${publishDir}` : "publish ready assets — you pick the folder first"}
+          >
+            {publishing ? "Publishing…" : "Publish"}
+          </button>
+          <button
+            class="gold split-caret"
+            onclick={(e) => {
+              e.stopPropagation();
+              deliverOpen = !deliverOpen;
+            }}
+            aria-label="delivery options"
+          >▾</button>
+          {#if deliverOpen}
+            <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+            <div class="menu card deliver-menu" onclick={(e) => e.stopPropagation()}>
+              <button class="mitem" onclick={() => { deliverOpen = false; exportOpen = true; }}>
+                Export Stake tree…
+              </button>
+              <button class="mitem" onclick={() => { deliverOpen = false; publish(true); }} disabled={publishing}>
+                Change publish folder…
+              </button>
+              {#if publishDir}
+                <span class="mpath mono">{publishDir}</span>
+              {/if}
+            </div>
+          {/if}
+        </div>
         <div class="menu-wrap">
           <button
             class="ghost"
@@ -478,24 +516,9 @@
               <button class="mitem" onclick={() => { menuOpen = false; anchorOpen = true; }}>
                 Style anchor…
               </button>
-              <button class="mitem" onclick={() => { menuOpen = false; contactOpen = true; }}>
-                Contact sheet…
-              </button>
-              <button class="mitem" onclick={() => { menuOpen = false; batchMsg = ""; error = ""; setKeys = []; }}>
-                Generate symbol set…
-              </button>
               <button class="mitem" onclick={() => { menuOpen = false; seedAll(); }} disabled={seeding || batchBusy}>
                 Seed subjects from Blueprint
               </button>
-              <button class="mitem" onclick={() => { menuOpen = false; publish(false); }} disabled={publishing}>
-                {publishing ? "Publishing…" : publishDir ? "Publish ready assets" : "Publish ready assets…"}
-              </button>
-              {#if publishDir}
-                <button class="mitem" onclick={() => { menuOpen = false; publish(true); }} disabled={publishing}>
-                  Change publish folder…
-                </button>
-                <span class="mpath mono">{publishDir}</span>
-              {/if}
             </div>
           {/if}
         </div>
@@ -802,6 +825,25 @@
   .seg button.on {
     background: var(--wash);
     color: var(--bone);
+  }
+  .split {
+    position: relative;
+    display: inline-flex;
+  }
+  .split-main {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .split-caret {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: 1px solid color-mix(in srgb, var(--void) 25%, transparent);
+    padding-inline: 0.45rem;
+    font-size: 0.7rem;
+  }
+  .deliver-menu {
+    right: 0;
+    left: auto;
   }
   .menu-wrap {
     position: relative;
