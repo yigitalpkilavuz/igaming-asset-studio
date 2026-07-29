@@ -194,8 +194,11 @@ export const audioConfig = {
 
 // ── FontStudio fixture ────────────────────────────────────────────────────────────────────────
 const FONT_TYPEFACES = [
-  { id: "luckiest_guy", name: "Luckiest Guy" },
-  { id: "titan_one", name: "Titan One" },
+  { id: "luckiest_guy", name: "Luckiest Guy", custom: false },
+  { id: "titan_one", name: "Titan One", custom: false },
+  { id: "anton", name: "Anton", custom: false },
+  { id: "rye", name: "Rye", custom: false },
+  { id: "custom:brand", name: "brand", custom: true },
 ];
 // A 1×1 transparent PNG so the preview <img> has a loadable src.
 const TINY_PNG =
@@ -318,6 +321,10 @@ export function mockInvoke(fixtureName: string, cmd: string, args: Record<string
       return FONT_TYPEFACES;
     case "preview_font":
       return TINY_PNG;
+    case "import_typeface":
+      return { id: "custom:imported", name: "imported", custom: true };
+    case "remove_typeface":
+      return null;
     case "get_variation_audio":
       return SILENT_WAV;
     case "generate_audio_variation":

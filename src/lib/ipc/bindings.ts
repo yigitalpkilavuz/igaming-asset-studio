@@ -119,10 +119,14 @@ export const commands = {
 	stabilityKeyPresent: () => __TAURI_INVOKE<boolean>("stability_key_present"),
 	setVertexToken: (token: string) => typedError<null, string>(__TAURI_INVOKE("set_vertex_token", { token })),
 	vertexTokenPresent: () => __TAURI_INVOKE<boolean>("vertex_token_present"),
-	/**  The typefaces bundled with the app (OFL / Apache, redistributable in exports). */
-	listFontTypefaces: () => __TAURI_INVOKE<FontTypeface[]>("list_font_typefaces"),
+	/**  Bundled display faces + the game's imported custom faces. */
+	listFontTypefaces: (gameId: string) => typedError<FontTypeface[], string>(__TAURI_INVOKE("list_font_typefaces", { gameId })),
 	/**  Rasterize `sample` in the given font → a PNG `data:` URL for the live preview. */
-	previewFont: (def: FontDef, sample: string) => typedError<string, string>(__TAURI_INVOKE("preview_font", { def, sample })),
+	previewFont: (gameId: string, def: FontDef, sample: string) => typedError<string, string>(__TAURI_INVOKE("preview_font", { gameId, def, sample })),
+	/**  Import a `.ttf`/`.otf` file into the project as a custom typeface. Returns the new face. */
+	importTypeface: (gameId: string, srcPath: string) => typedError<FontTypeface, string>(__TAURI_INVOKE("import_typeface", { gameId, srcPath })),
+	/**  Remove a project-imported custom typeface (bundled faces are ignored). */
+	removeTypeface: (gameId: string, id: string) => typedError<null, string>(__TAURI_INVOKE("remove_typeface", { gameId, id })),
 	/**
 	 *  Assemble the sheet prompt for the selected symbols WITHOUT generating — the composer
 	 *  shows it for review; the user may override it wholesale.
@@ -844,10 +848,12 @@ export type FontDef = {
 	outlinePx?: number,
 };
 
-/**  A bundled typeface the producer can pick for a font. */
+/**  A typeface choice surfaced to the Fonts UI. */
 export type FontTypeface = {
 	id: string,
 	name: string,
+	/**  True for a project-imported face (removable); false for a bundled one. */
+	custom: boolean,
 };
 
 /**  Output file formats an asset must ship in. */

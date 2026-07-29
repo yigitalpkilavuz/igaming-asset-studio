@@ -6,6 +6,7 @@
    * `.xml` + `.webp` at export — no AI, no per-take generation.
    */
   import { onMount } from "svelte";
+  import { open } from "@tauri-apps/plugin-dialog";
   import { commands, unwrap, type FontDef, type FontTypeface, type GameConfig } from "$lib/ipc";
   import { DEFAULT_FONTS, newFont } from "$lib/fonts";
 
@@ -31,11 +32,44 @@
   async function reload() {
     const project = await unwrap(commands.getProject(gameId));
     config = project.config;
-    typefaces = await commands.listFontTypefaces();
+    typefaces = await unwrap(commands.listFontTypefaces(gameId));
     if (!selectedKey || !fonts.some((f) => f.key === selectedKey)) {
       selectedKey = fonts[0]?.key ?? null;
     }
   }
+
+  /** Import a brand TTF/OTF and point the selected font at it. */
+  async function importTypeface() {
+    const f = selectedFont;
+    const path = await open({ filters: [{ name: "Font", extensions: ["ttf", "otf"] }], multiple: false });
+    if (typeof path !== "string") return;
+    busy = "Importing…";
+    try {
+      const face = await unwrap(commands.importTypeface(gameId, path));
+      typefaces = await unwrap(commands.listFontTypefaces(gameId));
+      if (f) patchFont(f.key, { typeface: face.id });
+      busy = "";
+    } catch (e) {
+      error = msg(e);
+      busy = "";
+    }
+  }
+
+  async function removeTypeface(id: string) {
+    busy = "Removing face…";
+    try {
+      await unwrap(commands.removeTypeface(gameId, id));
+      typefaces = await unwrap(commands.listFontTypefaces(gameId));
+      busy = "";
+    } catch (e) {
+      error = msg(e);
+      busy = "";
+    }
+  }
+
+  const selectedIsCustom = $derived(
+    typefaces.find((t) => t.id === selectedFont?.typeface)?.custom ?? false,
+  );
 
   onMount(() => {
     void (async () => {
@@ -94,7 +128,7 @@
       return;
     }
     let cancelled = false;
-    void unwrap(commands.previewFont(f, s))
+    void unwrap(commands.previewFont(gameId, f, s))
       .then((url) => {
         if (!cancelled) previewUrl = url;
       })
@@ -159,14 +193,27 @@
               <span class="mono key">{f.key}</span>
             </label>
 
-            <label class="row">
+            <div class="row">
               <span>Typeface</span>
               <select value={f.typeface} onchange={(e) => patchFont(f.key, { typeface: e.currentTarget.value })}>
-                {#each typefaces as t (t.id)}
-                  <option value={t.id}>{t.name}</option>
-                {/each}
+                <optgroup label="Bundled">
+                  {#each typefaces.filter((t) => !t.custom) as t (t.id)}
+                    <option value={t.id}>{t.name}</option>
+                  {/each}
+                </optgroup>
+                {#if typefaces.some((t) => t.custom)}
+                  <optgroup label="Imported">
+                    {#each typefaces.filter((t) => t.custom) as t (t.id)}
+                      <option value={t.id}>{t.name}</option>
+                    {/each}
+                  </optgroup>
+                {/if}
               </select>
-            </label>
+              <button class="ghost sm" onclick={importTypeface} title="import your own .ttf / .otf">Import…</button>
+              {#if selectedIsCustom}
+                <button class="ghost sm danger" onclick={() => f.typeface && removeTypeface(f.typeface)} title="remove this imported face">✕</button>
+              {/if}
+            </div>
 
             <label class="row">
               <span>Size (px)</span>

@@ -12,6 +12,7 @@ pub mod settings;
 pub mod storage;
 pub mod studio;
 pub mod taxonomy;
+pub mod typefaces;
 
 use tauri_specta::{collect_commands, Builder};
 
@@ -69,6 +70,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::audio::vertex_token_present,
         commands::fonts::list_font_typefaces,
         commands::fonts::preview_font,
+        commands::fonts::import_typeface,
+        commands::fonts::remove_typeface,
         commands::generate::plan_symbol_set,
         commands::generate::generate_symbol_set_sheet,
         commands::generate::import_symbol_set_sheet,

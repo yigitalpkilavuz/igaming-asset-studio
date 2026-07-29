@@ -23,19 +23,137 @@ pub struct Typeface {
     pub name: &'static str,
 }
 
-/// The typefaces bundled with the app (OFL / Apache licensed, redistributable in exports).
+/// The typefaces bundled with the app (OFL / Apache licensed, redistributable in exports). A
+/// curated spread of slot display faces: heavy numeral sans, rounded, comic, western, condensed.
 pub fn typefaces() -> Vec<Typeface> {
     vec![
+        Typeface { id: "abril_fatface", name: "Abril Fatface" },
+        Typeface { id: "alfa_slab_one", name: "Alfa Slab One" },
+        Typeface { id: "anton", name: "Anton" },
+        Typeface { id: "archivo_black", name: "Archivo Black" },
+        Typeface { id: "audiowide", name: "Audiowide" },
+        Typeface { id: "bagel_fat_one", name: "Bagel Fat One" },
+        Typeface { id: "bangers", name: "Bangers" },
+        Typeface { id: "baumans", name: "Baumans" },
+        Typeface { id: "bebas_neue", name: "Bebas Neue" },
+        Typeface { id: "bevan", name: "Bevan" },
+        Typeface { id: "black_ops_one", name: "Black Ops One" },
+        Typeface { id: "boogaloo", name: "Boogaloo" },
+        Typeface { id: "bowlby_one", name: "Bowlby One" },
+        Typeface { id: "bowlby_one_sc", name: "Bowlby One SC" },
+        Typeface { id: "bungee", name: "Bungee" },
+        Typeface { id: "butcherman", name: "Butcherman" },
+        Typeface { id: "changa_one", name: "Changa One" },
+        Typeface { id: "chango", name: "Chango" },
+        Typeface { id: "chewy", name: "Chewy" },
+        Typeface { id: "creepster", name: "Creepster" },
+        Typeface { id: "eater", name: "Eater" },
+        Typeface { id: "emilys_candy", name: "Emilys Candy" },
+        Typeface { id: "faster_one", name: "Faster One" },
+        Typeface { id: "fjalla_one", name: "Fjalla One" },
+        Typeface { id: "frederickathe_great", name: "Fredericka the Great" },
+        Typeface { id: "kaushan_script", name: "Kaushan Script" },
+        Typeface { id: "kavoon", name: "Kavoon" },
+        Typeface { id: "knewave", name: "Knewave" },
+        Typeface { id: "lilita_one", name: "Lilita One" },
+        Typeface { id: "lobster", name: "Lobster" },
         Typeface { id: "luckiest_guy", name: "Luckiest Guy" },
+        Typeface { id: "metamorphous", name: "Metamorphous" },
+        Typeface { id: "modak", name: "Modak" },
+        Typeface { id: "monoton", name: "Monoton" },
+        Typeface { id: "nosifer", name: "Nosifer" },
+        Typeface { id: "pacifico", name: "Pacifico" },
+        Typeface { id: "passion_one", name: "Passion One" },
+        Typeface { id: "patua_one", name: "Patua One" },
+        Typeface { id: "paytone_one", name: "Paytone One" },
+        Typeface { id: "permanent_marker", name: "Permanent Marker" },
+        Typeface { id: "pirata_one", name: "Pirata One" },
+        Typeface { id: "rammetto_one", name: "Rammetto One" },
+        Typeface { id: "righteous", name: "Righteous" },
+        Typeface { id: "rock_salt", name: "Rock Salt" },
+        Typeface { id: "rye", name: "Rye" },
+        Typeface { id: "satisfy", name: "Satisfy" },
+        Typeface { id: "shojumaru", name: "Shojumaru" },
+        Typeface { id: "shrikhand", name: "Shrikhand" },
+        Typeface { id: "sigmar_one", name: "Sigmar One" },
+        Typeface { id: "sniglet", name: "Sniglet" },
+        Typeface { id: "special_elite", name: "Special Elite" },
+        Typeface { id: "squada_one", name: "Squada One" },
+        Typeface { id: "staatliches", name: "Staatliches" },
         Typeface { id: "titan_one", name: "Titan One" },
+        Typeface { id: "trade_winds", name: "Trade Winds" },
+        Typeface { id: "ultra", name: "Ultra" },
+        Typeface { id: "uncial_antiqua", name: "Uncial Antiqua" },
+        Typeface { id: "wallpoet", name: "Wallpoet" },
+        Typeface { id: "yellowtail", name: "Yellowtail" },
+        Typeface { id: "yeseva_one", name: "Yeseva One" },
     ]
 }
 
-fn typeface_bytes(id: &str) -> Result<&'static [u8], String> {
+/// TTF bytes for a bundled typeface id. (Custom per-project faces are resolved in `crate::typefaces`.)
+pub(crate) fn typeface_bytes(id: &str) -> Result<&'static [u8], String> {
     Ok(match id {
+        "abril_fatface" => include_bytes!("../../assets/fonts/AbrilFatface-Regular.ttf"),
+        "alfa_slab_one" => include_bytes!("../../assets/fonts/AlfaSlabOne-Regular.ttf"),
+        "anton" => include_bytes!("../../assets/fonts/Anton-Regular.ttf"),
+        "archivo_black" => include_bytes!("../../assets/fonts/ArchivoBlack-Regular.ttf"),
+        "audiowide" => include_bytes!("../../assets/fonts/Audiowide-Regular.ttf"),
+        "bagel_fat_one" => include_bytes!("../../assets/fonts/BagelFatOne-Regular.ttf"),
+        "bangers" => include_bytes!("../../assets/fonts/Bangers-Regular.ttf"),
+        "baumans" => include_bytes!("../../assets/fonts/Baumans-Regular.ttf"),
+        "bebas_neue" => include_bytes!("../../assets/fonts/BebasNeue-Regular.ttf"),
+        "bevan" => include_bytes!("../../assets/fonts/Bevan-Regular.ttf"),
+        "black_ops_one" => include_bytes!("../../assets/fonts/BlackOpsOne-Regular.ttf"),
+        "boogaloo" => include_bytes!("../../assets/fonts/Boogaloo-Regular.ttf"),
+        "bowlby_one" => include_bytes!("../../assets/fonts/BowlbyOne-Regular.ttf"),
+        "bowlby_one_sc" => include_bytes!("../../assets/fonts/BowlbyOneSC-Regular.ttf"),
+        "bungee" => include_bytes!("../../assets/fonts/Bungee-Regular.ttf"),
+        "butcherman" => include_bytes!("../../assets/fonts/Butcherman-Regular.ttf"),
+        "changa_one" => include_bytes!("../../assets/fonts/ChangaOne-Regular.ttf"),
+        "chango" => include_bytes!("../../assets/fonts/Chango-Regular.ttf"),
+        "chewy" => include_bytes!("../../assets/fonts/Chewy-Regular.ttf"),
+        "creepster" => include_bytes!("../../assets/fonts/Creepster-Regular.ttf"),
+        "eater" => include_bytes!("../../assets/fonts/Eater-Regular.ttf"),
+        "emilys_candy" => include_bytes!("../../assets/fonts/EmilysCandy-Regular.ttf"),
+        "faster_one" => include_bytes!("../../assets/fonts/FasterOne-Regular.ttf"),
+        "fjalla_one" => include_bytes!("../../assets/fonts/FjallaOne-Regular.ttf"),
+        "frederickathe_great" => include_bytes!("../../assets/fonts/FrederickatheGreat-Regular.ttf"),
+        "kaushan_script" => include_bytes!("../../assets/fonts/KaushanScript-Regular.ttf"),
+        "kavoon" => include_bytes!("../../assets/fonts/Kavoon-Regular.ttf"),
+        "knewave" => include_bytes!("../../assets/fonts/Knewave-Regular.ttf"),
+        "lilita_one" => include_bytes!("../../assets/fonts/LilitaOne-Regular.ttf"),
+        "lobster" => include_bytes!("../../assets/fonts/Lobster-Regular.ttf"),
         "luckiest_guy" => include_bytes!("../../assets/fonts/LuckiestGuy-Regular.ttf"),
+        "metamorphous" => include_bytes!("../../assets/fonts/Metamorphous-Regular.ttf"),
+        "modak" => include_bytes!("../../assets/fonts/Modak-Regular.ttf"),
+        "monoton" => include_bytes!("../../assets/fonts/Monoton-Regular.ttf"),
+        "nosifer" => include_bytes!("../../assets/fonts/Nosifer-Regular.ttf"),
+        "pacifico" => include_bytes!("../../assets/fonts/Pacifico-Regular.ttf"),
+        "passion_one" => include_bytes!("../../assets/fonts/PassionOne-Regular.ttf"),
+        "patua_one" => include_bytes!("../../assets/fonts/PatuaOne-Regular.ttf"),
+        "paytone_one" => include_bytes!("../../assets/fonts/PaytoneOne-Regular.ttf"),
+        "permanent_marker" => include_bytes!("../../assets/fonts/PermanentMarker-Regular.ttf"),
+        "pirata_one" => include_bytes!("../../assets/fonts/PirataOne-Regular.ttf"),
+        "rammetto_one" => include_bytes!("../../assets/fonts/RammettoOne-Regular.ttf"),
+        "righteous" => include_bytes!("../../assets/fonts/Righteous-Regular.ttf"),
+        "rock_salt" => include_bytes!("../../assets/fonts/RockSalt-Regular.ttf"),
+        "rye" => include_bytes!("../../assets/fonts/Rye-Regular.ttf"),
+        "satisfy" => include_bytes!("../../assets/fonts/Satisfy-Regular.ttf"),
+        "shojumaru" => include_bytes!("../../assets/fonts/Shojumaru-Regular.ttf"),
+        "shrikhand" => include_bytes!("../../assets/fonts/Shrikhand-Regular.ttf"),
+        "sigmar_one" => include_bytes!("../../assets/fonts/SigmarOne-Regular.ttf"),
+        "sniglet" => include_bytes!("../../assets/fonts/Sniglet-Regular.ttf"),
+        "special_elite" => include_bytes!("../../assets/fonts/SpecialElite-Regular.ttf"),
+        "squada_one" => include_bytes!("../../assets/fonts/SquadaOne-Regular.ttf"),
+        "staatliches" => include_bytes!("../../assets/fonts/Staatliches-Regular.ttf"),
         "titan_one" => include_bytes!("../../assets/fonts/TitanOne-Regular.ttf"),
-        other => return Err(format!("unknown typeface: {other}")),
+        "trade_winds" => include_bytes!("../../assets/fonts/TradeWinds-Regular.ttf"),
+        "ultra" => include_bytes!("../../assets/fonts/Ultra-Regular.ttf"),
+        "uncial_antiqua" => include_bytes!("../../assets/fonts/UncialAntiqua-Regular.ttf"),
+        "wallpoet" => include_bytes!("../../assets/fonts/Wallpoet-Regular.ttf"),
+        "yellowtail" => include_bytes!("../../assets/fonts/Yellowtail-Regular.ttf"),
+        "yeseva_one" => include_bytes!("../../assets/fonts/YesevaOne-Regular.ttf"),
+        other => return Err(format!("unknown bundled typeface: {other}")),
     })
 }
 
@@ -75,11 +193,10 @@ struct Cell {
     buf: RgbaImage, // colored glyph (may be 1x1 for whitespace)
 }
 
-/// Rasterize a `FontDef` into `(bmfont_xml, page_webp_bytes)`. The XML's `<page file>` references
-/// `<key>.webp`, matching the sibling file the export writes.
-pub fn rasterize_font(def: &FontDef) -> Result<(String, Vec<u8>), String> {
-    let bytes = typeface_bytes(&def.typeface)?;
-    let font = FontRef::try_from_slice(bytes).map_err(|e| format!("load typeface: {e}"))?;
+/// Rasterize a `FontDef` (with its already-resolved `ttf` bytes) into `(bmfont_xml, page_webp)`.
+/// The XML's `<page file>` references `<key>.webp`, matching the sibling file the export writes.
+pub fn rasterize_font(def: &FontDef, ttf: &[u8]) -> Result<(String, Vec<u8>), String> {
+    let font = FontRef::try_from_slice(ttf).map_err(|e| format!("load typeface: {e}"))?;
     let px = (def.size_px.max(8)) as f32;
     let scale = PxScale::from(px);
     let sf = font.as_scaled(scale);
@@ -219,9 +336,8 @@ pub fn rasterize_font(def: &FontDef) -> Result<(String, Vec<u8>), String> {
 }
 
 /// Rasterize a short sample string for the UI preview (a standalone PNG, transparent bg).
-pub fn preview_png(def: &FontDef, sample: &str) -> Result<Vec<u8>, String> {
-    let bytes = typeface_bytes(&def.typeface)?;
-    let font = FontRef::try_from_slice(bytes).map_err(|e| format!("load typeface: {e}"))?;
+pub fn preview_png(def: &FontDef, sample: &str, ttf: &[u8]) -> Result<Vec<u8>, String> {
+    let font = FontRef::try_from_slice(ttf).map_err(|e| format!("load typeface: {e}"))?;
     let px = (def.size_px.max(8)) as f32;
     let scale = PxScale::from(px);
     let sf = font.as_scaled(scale);
@@ -333,9 +449,13 @@ mod tests {
         }
     }
 
+    fn ttf() -> &'static [u8] {
+        typeface_bytes("luckiest_guy").unwrap()
+    }
+
     #[test]
     fn rasterizes_a_valid_bmfont() {
-        let (xml, webp) = rasterize_font(&def()).expect("rasterize");
+        let (xml, webp) = rasterize_font(&def(), ttf()).expect("rasterize");
         // BMFont shape: info/common/pages/chars, page references <key>.webp.
         assert!(xml.starts_with("<?xml"));
         assert!(xml.contains("<font>"));
@@ -355,7 +475,7 @@ mod tests {
 
     #[test]
     fn char_count_matches_chars() {
-        let (xml, _) = rasterize_font(&def()).unwrap();
+        let (xml, _) = rasterize_font(&def(), ttf()).unwrap();
         let count_attr: usize = xml
             .split("<chars count=\"")
             .nth(1)
@@ -368,8 +488,20 @@ mod tests {
 
     #[test]
     fn preview_is_a_png() {
-        let png = preview_png(&def(), "1,234.56").expect("preview");
+        let png = preview_png(&def(), "1,234.56", ttf()).expect("preview");
         let img = image::load_from_memory(&png).expect("decode png");
         assert!(img.width() > 10 && img.height() > 10);
+    }
+
+    #[test]
+    fn every_bundled_typeface_loads_and_rasterizes() {
+        for t in typefaces() {
+            let bytes = typeface_bytes(t.id).unwrap_or_else(|_| panic!("bytes for {}", t.id));
+            let mut d = def();
+            d.typeface = t.id.into();
+            let (xml, webp) = rasterize_font(&d, bytes).unwrap_or_else(|e| panic!("{}: {e}", t.id));
+            assert!(xml.contains("<char "), "{} produced glyphs", t.id);
+            assert!(webp.len() > 100, "{} produced a page", t.id);
+        }
     }
 }

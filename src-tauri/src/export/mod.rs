@@ -249,7 +249,7 @@ pub fn build_dist_gated(base: &Path, game_id: &str, force: bool) -> Result<Expor
         // Fonts bake deterministically from their FontDef (rasterize → BMFont .xml + .webp page).
         if asset.production == Production::Font {
             if let Some(def) = project.config.fonts.iter().find(|f| f.key == asset.key) {
-                manifest_entries.push(export_font(def, &dist_root)?);
+                manifest_entries.push(export_font(base, game_id, def, &dist_root)?);
                 written.push(asset.key.clone());
             } else {
                 missing.push(asset.key.clone());
@@ -673,9 +673,15 @@ pub fn publish_audio_sprite(base: &Path, game_id: &str, dest: &Path) -> Result<V
 
 /// Rasterize a `FontDef` and write its BMFont pair to `dist/fonts/<key>/`, returning the single
 /// `type: 'font'` manifest entry that registers it (pixi-svelte loads the `.xml`, which references
-/// the sibling `.webp` page).
-fn export_font(def: &crate::model::game_config::FontDef, dist_root: &Path) -> Result<String, String> {
-    let (xml, webp) = crate::processing::font::rasterize_font(def)?;
+/// the sibling `.webp` page). Resolves the typeface (bundled or the project's imported face).
+fn export_font(
+    base: &Path,
+    game_id: &str,
+    def: &crate::model::game_config::FontDef,
+    dist_root: &Path,
+) -> Result<String, String> {
+    let ttf = crate::typefaces::resolve_bytes(base, game_id, &def.typeface)?;
+    let (xml, webp) = crate::processing::font::rasterize_font(def, &ttf)?;
     let dir = dist_root.join("fonts").join(&def.key);
     fs::create_dir_all(&dir).map_err(|e| format!("create fonts/{}: {e}", def.key))?;
     fs::write(dir.join(format!("{}.xml", def.key)), xml).map_err(|e| format!("write font xml: {e}"))?;
@@ -855,8 +861,8 @@ mod audio_sprite_tests {
         let dir = std::env::temp_dir().join(format!("wf_fontexport_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let def = crate::model::game_config::default_fonts().remove(0); // font_white
-        let entry = export_font(&def, &dir).expect("export_font");
+        let def = crate::model::game_config::default_fonts().remove(0); // font_white (bundled face)
+        let entry = export_font(&dir, "g", &def, &dir).expect("export_font");
         // Files land under fonts/<key>/, xml + webp page.
         assert!(dir.join(format!("fonts/{k}/{k}.xml", k = def.key)).is_file(), "xml written");
         assert!(dir.join(format!("fonts/{k}/{k}.webp", k = def.key)).is_file(), "webp page written");
