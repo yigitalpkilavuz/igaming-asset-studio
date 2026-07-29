@@ -49,7 +49,12 @@
     onedit: () => void;
   } = $props();
 
-  const PRESETS = ["idle", "anticipation", "win", "win_big", "bonus", "expand"];
+  // Blank clips to hand-key — same vocabulary the AI type picker offers (AnimateMode ANIM_TYPES),
+  // so the manual and auto paths stay consistent. "custom" is the free-name form below.
+  const PRESETS = [
+    "idle", "idle_alt", "anticipation", "win", "win_big", "mega_win",
+    "bonus", "expand", "reveal", "land", "scatter", "wild", "hover", "celebrate",
+  ];
   let addOpen = $state(false);
   let customName = $state("");
   let trackAddOpen = $state(false);

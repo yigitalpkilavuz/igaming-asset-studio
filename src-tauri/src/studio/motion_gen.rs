@@ -27,8 +27,9 @@ the named bones/slots listed below; match material and role, not just the name.\
 Primitives:\n\
 BONE: bob (gentle vertical float, amp = pixels) · sway (slow rotate rock, amp = degrees) · \
 swing (bigger limb/cape/tail rotate, amp = degrees) · breathe (torso/root scale pulse, amp = \
-fraction like 0.03) · spin (continuous rotation, amp = number of turns) · shake (a decaying \
-impact jitter, amp = pixels).\n\
+fraction like 0.03) · shift (a slow side-to-side weight-shift of the body/root, amp = pixels — \
+the anchor of a lively idle) · spin (continuous rotation, amp = number of turns) · shake (a \
+decaying impact jitter, amp = pixels).\n\
 SLOT: pulse (alpha throb, amp = peak 0..1) · glint (colour shimmer — tints toward `color` hex \
 and back, for gems/metal/glass; use cycles=1 for a single win FLASH) · ripple (soft \
 jelly/cloth/flame wobble, amp = pixels — ONLY for a slot whose entry has \"mesh\": true) · \
@@ -44,12 +45,16 @@ Params: amp (see above), cycles (oscillations over the clip — keep whole for a
 1–3 for idle, more for energetic), phase (0..6.28 — give bones DEEPER in the chain a larger \
 phase so motion flows outward as follow-through), color (hex, glint only), to (attachment \
 name, swap/blink only), at (0..1, beats only — when the beat peaks).\n\
+For an IDLE, build a LIVING stance, not a bobbing prop: ANCHOR with a shift (and/or breathe) on \
+the body/root, then layer subtle secondary motion OUTWARD — head, limbs, cape/tail sway that \
+lags with follow-through. A few coordinated moves read far better than many independent ones; \
+keep idles 3–5s so they don't obviously repeat.\n\
 Use the brief to decide WHICH parts move and how strongly. Prefer 2–6 moves; err subtle for \
 idles, be punchy for events. Set duration (seconds); loop=true for idles, loop=false for \
 event reactions.\n\
 Output ONLY this JSON object: {\"duration\": number, \"loop\": boolean, \"moves\": [{\"target\": \
 \"boneOrSlotName\", \"kind\": \
-\"bob|sway|swing|breathe|spin|shake|pulse|glint|ripple|blink|pop|anticipate|impact|reveal\", \
+\"bob|sway|swing|breathe|shift|spin|shake|pulse|glint|ripple|blink|pop|anticipate|impact|reveal\", \
 \"amp\": number, \"cycles\": number, \"phase\": number, \"at\": number, \"color\": \"rrggbb\", \"to\": \
 \"attachmentName\"}]}";
 
@@ -93,18 +98,36 @@ fn ease_n(comps: usize) -> Curve {
     Curve::Bezier(EASE_IN_OUT.iter().cycle().take(comps * 4).copied().collect())
 }
 
-/// One eased sine oscillation of amplitude `amp` about `base`. `cycles` is rounded to whole
-/// periods so the last key equals the first — a seamless loop. Single-component keys.
+/// One eased, loop-closed oscillation about `base` with peak `amp`. The shape is a fundamental
+/// plus small 2nd/3rd harmonics (normalized so `amp` stays the true peak) — a hand-animated feel
+/// rather than a bare sine — and `cycles` is whole so the last key equals the first (seamless).
 fn wave(base: f64, amp: f64, cycles: f64, phase: f64, duration: f64) -> Vec<Key> {
     let cyc = cycles.round().max(1.0);
-    let n = (cyc as usize) * 4;
+    let n = (cyc as usize) * 6; // denser so the richer shape reads smoothly
+    let shape = |x: f64| x.sin() + 0.18 * (2.0 * x + 0.7).sin() + 0.09 * (3.0 * x + 1.9).sin();
+    // Peak of |shape| over a full period, so dividing keeps `amp` the true amplitude.
+    let peak = (0..360)
+        .map(|d| shape((d as f64).to_radians()).abs())
+        .fold(0.0_f64, f64::max)
+        .max(1e-6);
     (0..=n)
         .map(|i| {
             let f = i as f64 / n as f64;
-            let v = base + amp * (2.0 * PI * cyc * f + phase).sin();
+            let v = base + amp * shape(2.0 * PI * cyc * f + phase) / peak;
             Key { time: duration * f, v: vec![v], curve: ease() }
         })
         .collect()
+}
+
+/// Deterministic 0..1 hash of a name — used to desync per-bone phase so an idle doesn't move in
+/// lockstep (a tell of procedural motion).
+fn hash01(s: &str) -> f64 {
+    let mut h: u64 = 1469598103934665603;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(1099511628211);
+    }
+    (h % 997) as f64 / 997.0
 }
 
 fn parse_hex(s: &str) -> Option<[f64; 3]> {
@@ -188,7 +211,8 @@ pub fn render_move(doc: &StudioDoc, m: &MoveDraft, duration: f64) -> Option<Time
     let is_bone = doc.bones.iter().any(|b| b.name == t);
     let is_slot = doc.slots.iter().any(|s| s.name == t);
     let cycles = m.cycles.unwrap_or(1.0);
-    let phase = m.phase.unwrap_or(0.0);
+    // A small per-target phase offset desyncs the oscillators so bones aren't in lockstep.
+    let phase = m.phase.unwrap_or(0.0) + hash01(t) * 0.7;
     let max_dim = doc.source.width.max(doc.source.height) as f64;
 
     let (target, keys) = match m.kind.trim().to_lowercase().as_str() {
@@ -196,7 +220,7 @@ pub fn render_move(doc: &StudioDoc, m: &MoveDraft, duration: f64) -> Option<Time
             let amp = m.amp.unwrap_or(6.0).clamp(1.0, max_dim * 0.12);
             let keys = wave(0.0, amp, cycles, phase, duration)
                 .into_iter()
-                .map(|k| Key { v: vec![0.0, k.v[0]], ..k }) // translate: y only
+                .map(|k| Key { time: k.time, v: vec![0.0, k.v[0]], curve: ease_n(2) }) // translate: y only
                 .collect();
             (TimelineTarget::BoneTranslate(t.to_string()), keys)
         }
@@ -212,9 +236,26 @@ pub fn render_move(doc: &StudioDoc, m: &MoveDraft, duration: f64) -> Option<Time
             let amp = m.amp.unwrap_or(0.03).clamp(0.005, 0.15);
             let keys = wave(1.0, amp, cycles, phase, duration)
                 .into_iter()
-                .map(|k| Key { v: vec![k.v[0], k.v[0]], ..k }) // uniform scale
+                .map(|k| Key { time: k.time, v: vec![k.v[0], k.v[0]], curve: ease_n(2) }) // uniform scale
                 .collect();
             (TimelineTarget::BoneScale(t.to_string()), keys)
+        }
+        "shift" | "weight" | "settle" if is_bone => {
+            // A living weight-shift: a slow side-to-side drift of the body with a gentle vertical
+            // dip at each extreme (elliptical) — the anchor a good idle is built around.
+            let amp = m.amp.unwrap_or(4.0).clamp(1.0, max_dim * 0.06);
+            let cyc = cycles.round().max(1.0);
+            let n = (cyc as usize) * 8;
+            let keys = (0..=n)
+                .map(|i| {
+                    let f = i as f64 / n as f64;
+                    let a = 2.0 * PI * cyc * f + phase;
+                    let x = amp * a.sin();
+                    let y = amp * 0.35 * (1.0 - (2.0 * a).cos()) / 2.0; // dips down at the extremes
+                    Key { time: duration * f, v: vec![x, y], curve: ease_n(2) }
+                })
+                .collect();
+            (TimelineTarget::BoneTranslate(t.to_string()), keys)
         }
         "spin" if is_bone => {
             let turns = m.amp.or(m.cycles).unwrap_or(1.0).round().max(1.0);
@@ -278,14 +319,29 @@ pub fn render_move(doc: &StudioDoc, m: &MoveDraft, duration: f64) -> Option<Time
             let a = m.at.unwrap_or(0.35).clamp(0.15, 0.82);
             let s = m.amp.unwrap_or(0.15).clamp(0.03, 0.4); // stretch fraction
             let tm = |f: f64| (a + f).clamp(0.0, 1.0) * duration;
-            // Squash (crouch: wider+shorter) → stretch (taller+narrower) → overshoot → settle.
-            let keys = vec![
-                Key { time: 0.0, v: vec![1.0, 1.0], curve: ease_n(2) },
-                Key { time: tm(-0.12), v: vec![1.0 + 0.6 * s, 1.0 - 0.6 * s], curve: ease_n(2) },
-                Key { time: tm(0.0), v: vec![1.0 - s, 1.0 + s], curve: ease_n(2) },
-                Key { time: tm(0.13), v: vec![1.0 + 0.3 * s, 1.0 - 0.3 * s], curve: ease_n(2) },
-                Key { time: tm(0.30), v: vec![1.0, 1.0], curve: Curve::Linear },
-            ];
+            // A parent bone's NON-UNIFORM scale shears/distorts every child part (the classic
+            // mascot "body deformity"). So squash-&-stretch is only safe on a LEAF bone; a bone
+            // with children pops UNIFORMLY (both axes together) — the whole figure bounces as one.
+            let has_children = doc.bones.iter().any(|b| b.parent.as_deref() == Some(t));
+            let keys = if has_children {
+                // Uniform bounce: crouch → pop overshoot → small undershoot → settle. No shear.
+                vec![
+                    Key { time: 0.0, v: vec![1.0, 1.0], curve: ease_n(2) },
+                    Key { time: tm(-0.12), v: vec![1.0 - 0.35 * s, 1.0 - 0.35 * s], curve: ease_n(2) },
+                    Key { time: tm(0.0), v: vec![1.0 + s, 1.0 + s], curve: ease_n(2) },
+                    Key { time: tm(0.16), v: vec![1.0 - 0.12 * s, 1.0 - 0.12 * s], curve: ease_n(2) },
+                    Key { time: tm(0.34), v: vec![1.0, 1.0], curve: Curve::Linear },
+                ]
+            } else {
+                // True squash & stretch (wider+shorter → taller+narrower), volume-preserving.
+                vec![
+                    Key { time: 0.0, v: vec![1.0, 1.0], curve: ease_n(2) },
+                    Key { time: tm(-0.12), v: vec![1.0 + 0.6 * s, 1.0 - 0.6 * s], curve: ease_n(2) },
+                    Key { time: tm(0.0), v: vec![1.0 - s, 1.0 + s], curve: ease_n(2) },
+                    Key { time: tm(0.13), v: vec![1.0 + 0.3 * s, 1.0 - 0.3 * s], curve: ease_n(2) },
+                    Key { time: tm(0.30), v: vec![1.0, 1.0], curve: Curve::Linear },
+                ]
+            };
             (TimelineTarget::BoneScale(t.to_string()), keys)
         }
         "anticipate" | "windup" if is_bone => {
@@ -332,7 +388,33 @@ pub fn render_move(doc: &StudioDoc, m: &MoveDraft, duration: f64) -> Option<Time
 fn is_event(name: &str) -> bool {
     matches!(
         name.trim().to_lowercase().as_str(),
-        "win" | "win_big" | "winbig" | "bigwin" | "anticipation" | "bonus" | "expand" | "reveal" | "hit"
+        "win"
+            | "win_big"
+            | "winbig"
+            | "bigwin"
+            | "big_win"
+            | "mega_win"
+            | "megawin"
+            | "mega"
+            | "jackpot"
+            | "anticipation"
+            | "anticipate"
+            | "bonus"
+            | "feature"
+            | "trigger"
+            | "expand"
+            | "grow"
+            | "reveal"
+            | "appear"
+            | "intro"
+            | "land"
+            | "drop"
+            | "scatter"
+            | "celebrate"
+            | "taunt"
+            | "cheer"
+            | "happy"
+            | "hit"
     )
 }
 
@@ -429,14 +511,108 @@ mod tests {
     }
 
     #[test]
+    fn is_event_splits_reactions_from_idles() {
+        // One-shot reactions (and their aliases) → event beats, loop=false.
+        for n in ["win", "Win_Big", "mega_win", "anticipation", "bonus", "expand", "reveal", "land",
+                  "scatter", "celebrate"] {
+            assert!(is_event(n), "{n} should be a one-shot event");
+        }
+        // Ambient states → looping idles.
+        for n in ["idle", "idle_alt", "wild", "hover"] {
+            assert!(!is_event(n), "{n} should loop, not one-shot");
+        }
+    }
+
+    #[test]
+    fn pop_is_uniform_on_a_parent_but_squashes_a_leaf() {
+        use crate::studio::doc::Bone;
+        let mut d = doc(); // seed already has root + body
+        d.bones.push(Bone::new("head", Some("body".into()), 300.0, 180.0)); // body now has a child
+        d.bones.push(Bone::new("coin", Some("root".into()), 100.0, 100.0)); // leaf: no children
+        let pop = |target: &str| MoveDraft {
+            target: target.into(), kind: "pop".into(), amp: Some(0.2),
+            cycles: None, phase: None, color: None, to: None, at: Some(0.4),
+        };
+        // A parent bone's non-uniform scale would SHEAR its child parts, so a parent pops uniformly.
+        let body = render_move(&d, &pop("body"), 1.5).unwrap();
+        for k in &body.keys {
+            assert!((k.v[0] - k.v[1]).abs() < 1e-9, "parent pop must be uniform (no child shear): {:?}", k.v);
+        }
+        assert!(body.keys.iter().any(|k| k.v[0] > 1.05), "…but it still pops (scales up)");
+        // A leaf part has no children to distort → true squash & stretch (anti-correlated axes).
+        let coin = render_move(&d, &pop("coin"), 1.5).unwrap();
+        assert!(
+            coin.keys.iter().any(|k| (k.v[0] - k.v[1]).abs() > 0.05),
+            "leaf pop squashes & stretches"
+        );
+    }
+
+    #[test]
+    fn multi_component_primitives_carry_correctly_sized_curves() {
+        // Regression: the 2-component remaps (shift/bob/breathe) once inherited wave's 1-component
+        // (4-handle) easing curve, which the spine emitter rejects ("4 handles, expected 8").
+        let mut d = doc(); // seed already has root + body
+        d.bones.push(crate::studio::doc::Bone::new("head", Some("body".into()), 300.0, 180.0));
+        for (kind, target) in [("shift", "body"), ("bob", "head"), ("breathe", "body")] {
+            let tl = render_move(
+                &d,
+                &MoveDraft {
+                    target: target.into(), kind: kind.into(), amp: Some(5.0),
+                    cycles: Some(2.0), phase: None, color: None, to: None, at: None,
+                },
+                2.0,
+            )
+            .unwrap();
+            let comps = tl.target.components().unwrap();
+            for k in &tl.keys {
+                assert_eq!(k.v.len(), comps, "{kind}: value arity");
+                if let Curve::Bezier(h) = &k.curve {
+                    assert_eq!(h.len(), comps * 4, "{kind}: bezier handle count must match components");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn wave_is_loop_closed_and_eased() {
         let k = wave(0.0, 10.0, 2.0, 0.0, 2.0);
         assert!((k.first().unwrap().v[0] - k.last().unwrap().v[0]).abs() < 1e-9, "start == end");
         assert!((k.first().unwrap().time - 0.0).abs() < 1e-9);
         assert!((k.last().unwrap().time - 2.0).abs() < 1e-9);
         assert!(matches!(k[0].curve, Curve::Bezier(_)), "eased, not linear");
-        // Peaks reach the amplitude.
-        assert!(k.iter().any(|key| (key.v[0] - 10.0).abs() < 1e-6));
+        // Amplitude is normalized: the peak sits at ≈ amp, never blows past it.
+        let peak = k.iter().map(|key| key.v[0].abs()).fold(0.0_f64, f64::max);
+        assert!(peak > 8.0 && peak < 10.5, "peak ≈ amp: {peak}");
+    }
+
+    #[test]
+    fn wave_has_organic_texture_not_a_bare_sine() {
+        let k = wave(0.0, 10.0, 1.0, 0.0, 1.0);
+        let n = (k.len() - 1) as f64;
+        let dev = k
+            .iter()
+            .enumerate()
+            .map(|(i, key)| (key.v[0] - 10.0 * (2.0 * PI * i as f64 / n).sin()).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(dev > 0.3, "harmonic texture departs from a bare sine: {dev}");
+    }
+
+    #[test]
+    fn shift_is_an_elliptical_loop_closed_weight_drift() {
+        let d = doc();
+        let tl = render_move(&d, &MoveDraft {
+            target: "body".into(), kind: "shift".into(), amp: Some(6.0),
+            cycles: Some(1.0), phase: None, color: None, to: None, at: None,
+        }, 2.0).unwrap();
+        assert!(matches!(tl.target, TimelineTarget::BoneTranslate(_)));
+        assert!(tl.keys.iter().all(|k| k.v.len() == 2));
+        // Drifts to BOTH sides (a side-to-side weight shift), and loops seamlessly.
+        assert!(tl.keys.iter().any(|k| k.v[0] > 1.0), "shifts right");
+        assert!(tl.keys.iter().any(|k| k.v[0] < -1.0), "shifts left");
+        assert!(
+            tl.keys.first().unwrap().v.iter().zip(&tl.keys.last().unwrap().v).all(|(a, b)| (a - b).abs() < 1e-6),
+            "loop closes"
+        );
     }
 
     #[test]

@@ -336,6 +336,162 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// Env-gated GEOMETRY REVIEW of generated motion on a realistic cutout mascot. Builds a
+    /// full-body character (rigid region parts on an articulated bone tree — the default rig,
+    /// no meshes), renders a GENERATED idle and win through `render_plan` (real amp clamps +
+    /// safety nets), and exports atlas+skeleton so `scripts/review-motion.mjs` can compute the
+    /// WORLD vertices of every part through the real spine runtime and measure body distortion.
+    /// The classic mascot "deformity" is a child part SHEARING because a `pop` puts non-uniform
+    /// scale on a parent bone; this makes it measurable. Run:
+    ///   WF_MASCOT_DUMP=/…/out cargo test --lib studio::preview::tests::mascot_motion_review -- --nocapture
+    ///   node scripts/review-motion.mjs /…/out
+    #[test]
+    fn mascot_motion_review() {
+        let Some(dir) = std::env::var_os("WF_MASCOT_DUMP") else {
+            return;
+        };
+        let out = std::path::PathBuf::from(dir);
+        let base = out.join("proj");
+        let (gid, key) = ("g", "mascot");
+
+        let write_png = |path: &std::path::Path, w: u32, h: u32, rgba: [u8; 4]| {
+            let img = image::RgbaImage::from_pixel(w, h, image::Rgba(rgba));
+            let mut buf = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(img)
+                .write_to(&mut buf, image::ImageFormat::Png)
+                .unwrap();
+            store::write_file(path, &buf.into_inner()).unwrap();
+        };
+
+        use crate::studio::doc::*;
+        // A plausible full-body character. bbox in source px (y-down); children of the torso
+        // are held at non-90° angles (arms) so a non-uniform torso scale SHEARS them visibly.
+        let parts: [(&str, Rect, [u8; 4]); 6] = [
+            ("torso", Rect { x: 255, y: 330, w: 90, h: 200 }, [120, 60, 60, 255]),
+            ("head", Rect { x: 250, y: 205, w: 100, h: 120 }, [60, 120, 80, 255]),
+            ("arm_l", Rect { x: 185, y: 340, w: 70, h: 170 }, [80, 80, 140, 255]),
+            ("arm_r", Rect { x: 345, y: 340, w: 70, h: 170 }, [80, 80, 140, 255]),
+            ("leg_l", Rect { x: 265, y: 520, w: 35, h: 200 }, [100, 90, 60, 255]),
+            ("leg_r", Rect { x: 300, y: 520, w: 35, h: 200 }, [100, 90, 60, 255]),
+        ];
+        write_png(&store::source_path(&base, gid, key), 600, 760, [40, 40, 48, 255]);
+        for (id, bb, col) in parts {
+            write_png(&store::part_dir(&base, gid, key, id).join("cut.png"), bb.w, bb.h, col);
+        }
+
+        let mut doc = StudioDoc::seed(
+            SourceRef { variation_id: "v".into(), width: 600, height: 760, sha256: "s".into() },
+            0.0,
+        );
+        doc.parts = parts
+            .iter()
+            .map(|(id, bb, _)| Part {
+                id: (*id).into(),
+                name: (*id).into(),
+                prompts: vec![],
+                bbox: Some(*bb),
+                mask_hash: None,
+                completed_hash: None,
+                completed_bbox: None,
+                texture: PartTexture::Cut,
+                deformable: false,
+                attachment_only: false,
+            })
+            .collect();
+        let mk = |name: &str, parent: Option<&str>, x: f64, y: f64, rot: f64, len: f64| {
+            let mut b = Bone::new(name, parent.map(|s| s.to_string()), x, y);
+            b.rotation = rot;
+            b.length = len;
+            b
+        };
+        doc.bones = vec![
+            mk("root", None, 300.0, 600.0, 0.0, 0.0),
+            mk("torso", Some("root"), 300.0, 520.0, 90.0, 190.0),
+            mk("head", Some("torso"), 300.0, 330.0, 90.0, 120.0),
+            mk("arm_l", Some("torso"), 255.0, 350.0, 250.0, 170.0),
+            mk("arm_r", Some("torso"), 345.0, 350.0, 290.0, 170.0),
+            mk("leg_l", Some("root"), 285.0, 525.0, 265.0, 195.0),
+            mk("leg_r", Some("root"), 315.0, 525.0, 275.0, 195.0),
+        ];
+        doc.slots = parts
+            .iter()
+            .map(|(id, _, _)| Slot {
+                name: (*id).into(),
+                bone: (*id).into(),
+                part_id: (*id).into(),
+                attachment: Attachment::Region,
+                blend: BlendMode::Normal,
+                alternates: vec![],
+            })
+            .collect();
+
+        use crate::studio::motion_gen::{render_plan, MoveDraft, PlanDraft};
+        let osc = |target: &str, kind: &str, amp: f64| MoveDraft {
+            target: target.into(),
+            kind: kind.into(),
+            amp: Some(amp),
+            cycles: Some(2.0),
+            phase: None,
+            color: None,
+            to: None,
+            at: None,
+        };
+        let beat = |target: &str, kind: &str, amp: f64, at: f64| MoveDraft {
+            target: target.into(),
+            kind: kind.into(),
+            amp: Some(amp),
+            cycles: None,
+            phase: None,
+            color: None,
+            to: None,
+            at: Some(at),
+        };
+        let idle = render_plan(
+            &doc,
+            "idle",
+            "idle",
+            PlanDraft {
+                duration: 3.0,
+                looping: Some(true),
+                moves: vec![
+                    osc("torso", "shift", 8.0),
+                    osc("torso", "breathe", 0.03),
+                    osc("head", "sway", 6.0),
+                    osc("arm_l", "swing", 16.0),
+                    osc("arm_r", "swing", 16.0),
+                    osc("leg_l", "swing", 8.0),
+                    osc("leg_r", "swing", 8.0),
+                ],
+            },
+        );
+        let win = render_plan(
+            &doc,
+            "win",
+            "win",
+            PlanDraft {
+                duration: 1.6,
+                looping: Some(false),
+                moves: vec![
+                    beat("torso", "pop", 0.18, 0.35), // non-uniform scale on a parent → shears children
+                    beat("arm_r", "anticipate", 16.0, 0.35),
+                    osc("torso", "glint", 0.0), // colour only, harmless
+                ],
+            },
+        );
+        doc.clips = vec![idle, win];
+
+        let report = export(&base, gid, key, &doc).unwrap();
+        for f in &report.files {
+            fs::copy(store::export_dir(&base, gid, key).join(f), out.join(f)).unwrap();
+        }
+        eprintln!(
+            "wrote mascot export to {} — now run: node scripts/review-motion.mjs {}",
+            out.display(),
+            out.display()
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
     /// Dump the REAL preview bundle for an on-disk asset — the exact artifact every studio
     /// preview renders. Confirms whether the skeleton/atlas/textures are valid (→ frontend
     /// bug) or the bundle build fails/empties (→ backend bug). Env-gated. Run:

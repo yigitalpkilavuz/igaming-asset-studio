@@ -131,7 +131,7 @@
       activeClipId = id;
       return;
     }
-    const c: Clip = { id, name, duration: 2, looping: true, timelines: [] };
+    const c: Clip = { id, name, duration: 2, looping: !isEventName(name), timelines: [] };
     doc.clips.push(c);
     activeClipId = id;
     selection = null;
@@ -362,11 +362,51 @@
   const hasTurn = $derived(doc.clips.some((c) => c.timelines.some((t) => "slotDeform" in t.target)));
 
   // ── AI motion (Phase 6) ──────────────────────────────────────────────────────
+  // The auto flow: pick a TYPE and the AI decides what that animation should be (grounded in
+  // the symbol). Each type carries an inherent intent the backend expands (motion::type_intent);
+  // `event` drives the loop/one-shot glyph, `hint` tells the user what they'll get. "custom" hands
+  // control back to a free-typed name + brief.
+  let aiName = $state(""); // custom-mode clip name (unused unless aiType === "custom")
+  const ANIM_TYPES: { id: string; label: string; event: boolean; hint: string }[] = [
+    { id: "idle", label: "Idle", event: false, hint: "calm living loop — the resting state" },
+    { id: "idle_alt", label: "Idle break", event: false, hint: "a beat of character over the idle" },
+    { id: "anticipation", label: "Anticipation", event: true, hint: "wind-up & tension before a result" },
+    { id: "win", label: "Win", event: true, hint: "a springy celebratory pop + flash" },
+    { id: "win_big", label: "Big win", event: true, hint: "bigger, bouncier — everything reacts" },
+    { id: "mega_win", label: "Mega win", event: true, hint: "over-the-top showstopper" },
+    { id: "bonus", label: "Bonus", event: true, hint: "feature-trigger flourish + burst of light" },
+    { id: "expand", label: "Expand", event: true, hint: "grows to fill the reel with a shimmer" },
+    { id: "reveal", label: "Reveal", event: true, hint: "confident scale/fade-in entrance" },
+    { id: "land", label: "Land", event: true, hint: "drop + squash on impact + settle" },
+    { id: "scatter", label: "Scatter", event: true, hint: "bright pulse + glint to draw the eye" },
+    { id: "wild", label: "Wild", event: false, hint: "glowing magical pulse — loops" },
+    { id: "hover", label: "Hover", event: false, hint: "weightless floating bob — loops" },
+    { id: "celebrate", label: "Celebrate", event: true, hint: "character cheer — arms up, happy bounce" },
+  ];
+  let aiType = $state("idle");
+  const selectedType = $derived(ANIM_TYPES.find((t) => t.id === aiType) ?? null);
+  // The clip name we actually generate: the picked type, or the free name in custom mode.
+  const targetName = $derived(
+    aiType === "custom" ? (aiName.trim() || clip?.name || "clip") : aiType,
+  );
+  // Mirror of backend motion_gen::is_event — a one-shot reaction vs a looping idle. Used for the
+  // ∞/▸ glyph and to seed a blank clip's `looping` correctly (win plays once, idle loops).
+  function isEventName(name: string): boolean {
+    const n = name.trim().toLowerCase();
+    const t = ANIM_TYPES.find((x) => x.id === n);
+    if (t) return t.event;
+    return /^(win|win_big|winbig|bigwin|big_win|mega_win|megawin|mega|jackpot|anticipation|anticipate|bonus|feature|trigger|expand|grow|reveal|appear|intro|land|drop|scatter|celebrate|taunt|cheer|happy|hit)$/.test(
+      n,
+    );
+  }
+  const loopGlyph = $derived(
+    selectedType ? (selectedType.event ? "▸" : "∞") : isEventName(targetName) ? "▸" : "∞",
+  );
+
   // Seeded ONCE from the motion brief written at the Cut step — the same plan the
   // parts were cut for; edits here stay local to the clip being drafted.
   // svelte-ignore state_referenced_locally
   let aiBrief = $state(doc.motionBrief ?? "");
-  let aiName = $state("");
   let aiBusy = $state(false);
   let aiMsg = $state("");
   /** Live best-of-N progress from the backend (null while idle / single Draft). */
@@ -422,14 +462,14 @@
     commit();
   }
   async function draftClip() {
-    const name = (aiName.trim() || clip?.name || "idle").trim();
+    const name = targetName.trim();
     aiBusy = true;
     aiProg = null; // single call → indeterminate spinner
-    aiMsg = `Drafting “${name}”…`;
+    aiMsg = aiBrief.trim() ? `Animating “${name}”…` : `Auto-animating “${name}”…`;
     try {
       const result = await unwrap(commands.studioAiDraftClip(gameId, assetKey, name, aiBrief.trim()));
       applyDrafted(result);
-      aiMsg = `Drafted “${result.name}” — ${result.timelines.length} tracks. Refine or Revert.`;
+      aiMsg = `Made “${result.name}” — ${result.timelines.length} tracks. Refine or Revert.`;
     } catch (e) {
       aiMsg = e instanceof Error ? e.message : String(e);
     } finally {
@@ -438,7 +478,7 @@
     }
   }
   async function polishClip() {
-    const name = (aiName.trim() || clip?.name || "idle").trim();
+    const name = targetName.trim();
     aiBusy = true;
     aiProg = null; // filled by studio://ai-progress step events
     aiMsg = `Polishing “${name}”…`;
@@ -728,35 +768,52 @@
   <div class="ai-bar">
     <div class="ai-top">
       <span class="ai-glyph" title="AI motion director">✦</span>
-      <input
-        class="ai-name mono"
-        bind:value={aiName}
-        placeholder={clip?.name ?? "clip"}
-        title="target clip name (new or existing)"
-      />
-      <span class="ai-loop" title={clip?.looping === false ? "one-shot" : "looping"}>
-        {clip?.looping === false ? "▸" : "∞"}
+      <select class="ai-type" bind:value={aiType} title="what kind of animation to make">
+        {#each ANIM_TYPES as t (t.id)}
+          <option value={t.id}>{t.label}</option>
+        {/each}
+        <option value="custom">Custom…</option>
+      </select>
+      {#if aiType === "custom"}
+        <input
+          class="ai-name mono"
+          bind:value={aiName}
+          placeholder={clip?.name ?? "clip name"}
+          title="target clip name (new or existing)"
+        />
+      {/if}
+      <span class="ai-loop" title={loopGlyph === "▸" ? "plays once" : "loops"}>{loopGlyph}</span>
+      <span class="ai-hint tiny muted">
+        {selectedType ? selectedType.hint : "your own clip — name it, then describe it below"}
       </span>
-      <textarea
-        class="ai-brief"
-        rows="1"
-        bind:value={aiBrief}
-        placeholder="describe the motion… e.g. “body breathes, the axe glints, then a sharp win pop”"
-        onkeydown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey && !aiBusy && aiBrief.trim()) {
-            e.preventDefault();
-            draftClip();
-          }
-        }}
-      ></textarea>
     </div>
+    <textarea
+      class="ai-brief"
+      rows="1"
+      bind:value={aiBrief}
+      placeholder={selectedType
+        ? `Auto — the AI directs the ${selectedType.label.toLowerCase()} from the symbol. Type only to steer it (optional).`
+        : "Describe the motion in your own words…"}
+      onkeydown={(e) => {
+        if (e.key === "Enter" && !e.shiftKey && !aiBusy) {
+          e.preventDefault();
+          draftClip();
+        }
+      }}
+    ></textarea>
     <div class="ai-actions">
-      <button onclick={draftClip} disabled={aiBusy || !aiBrief.trim()}>Draft clip</button>
+      <button
+        onclick={draftClip}
+        disabled={aiBusy}
+        title="Pick a type and the AI makes it — grounded in the symbol. One quick call."
+      >
+        {aiBrief.trim() ? "Animate" : "Auto-animate"}
+      </button>
       <button
         class="polish"
-        title="Draft 3 candidates and let the AI critic pick the best — costs more"
+        title="Direct, draft 3 candidates, and let the AI critic pick the best — costs more"
         onclick={polishClip}
-        disabled={aiBusy || !aiBrief.trim()}
+        disabled={aiBusy}
       >
         ✦ Polish · best of 3
       </button>
@@ -982,13 +1039,27 @@
   .ai-name {
     width: 84px;
     font-size: 0.72rem;
-    align-self: stretch;
+    align-self: center;
+  }
+  .ai-type {
+    font-size: 0.74rem;
+    color: var(--bone);
+    background: var(--ink-3);
+    border: 1px solid var(--line-2);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.28rem 0.4rem;
+    align-self: center;
   }
   .ai-loop {
     align-self: center;
     color: var(--ash);
     font-size: 0.85rem;
-    margin-left: -0.25rem;
+    margin-left: -0.15rem;
+  }
+  .ai-hint {
+    align-self: center;
+    color: var(--ash);
+    line-height: 1.3;
   }
   .ai-brief {
     flex: 1;

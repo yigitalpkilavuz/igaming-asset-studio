@@ -1701,9 +1701,8 @@ pub async fn studio_ai_draft_clip(
     let base = projects_root(&app)?;
     let doc = store::read_doc(&base, &game_id, &asset_key)?
         .ok_or_else(|| "no studio for this asset".to_string())?;
-    if brief.trim().is_empty() {
-        return Err("describe the motion first".into());
-    }
+    // Auto mode: no brief → the clip type (name) decides the intent. A written brief overrides it.
+    let brief = if brief.trim().is_empty() { motion::type_intent(&name) } else { brief };
     // Give the director EYES: the symbol snapshot, so it grounds motion in materials it sees.
     let image = std::fs::read(store::source_path(&base, &game_id, &asset_key)).ok();
     motion::draft_clip(&key, &doc, &name, &brief, image.as_deref()).await
@@ -1727,9 +1726,8 @@ pub async fn studio_ai_polish_clip(
     let base = projects_root(&app)?;
     let doc = store::read_doc(&base, &game_id, &asset_key)?
         .ok_or_else(|| "no studio for this asset".to_string())?;
-    if brief.trim().is_empty() {
-        return Err("describe the motion first".into());
-    }
+    // Auto mode: no brief → the clip type (name) decides the intent. A written brief overrides it.
+    let brief = if brief.trim().is_empty() { motion::type_intent(&name) } else { brief };
     use tauri::Emitter;
     let emitter = app.clone();
     let image = std::fs::read(store::source_path(&base, &game_id, &asset_key)).ok();

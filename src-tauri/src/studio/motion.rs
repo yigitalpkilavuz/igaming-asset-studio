@@ -186,6 +186,61 @@ async fn chat_json(
         .ok_or_else(|| "no choices".to_string())
 }
 
+/// The default motion *intent* for a canonical clip type, used when the user picks a type from
+/// the list but writes no brief. This is the "AI decides what the animation should be" half —
+/// each slot-game state carries an inherent meaning (an idle breathes; a win pops), and the
+/// director then adapts this concept to the actual symbol it's shown. Unknown names fall back to
+/// a generic-but-tasteful intent so a custom clip name still auto-animates.
+pub fn type_intent(name: &str) -> String {
+    let intent = match name.trim().to_lowercase().as_str() {
+        "idle" => "A subtle, premium idle: the symbol is alive but at rest — a gentle weight-shift \
+            and breath through the body, small secondary drifts on loose/hanging parts with a \
+            little follow-through, and an occasional glint on metal or gems. Restrained; it should \
+            read as calm and expensive, never busy or bouncy.",
+        "idle_alt" | "idle2" | "idle_break" => "An idle BREAK: a brief moment of character over the \
+            resting pose — a look-around, a small gesture, a shrug or a double-blink — then ease \
+            back to rest. Loops, but with personality.",
+        "anticipation" | "anticipate" => "Build tension before a result: the symbol winds up and \
+            coils — a lean-back or a gathering of energy — then holds on the edge, expectant. All \
+            the tension is in the wind-up and the held beat; no payoff yet.",
+        "win" => "A celebratory win reaction: a quick anticipation dip, then a springy POP with \
+            overshoot, a bright glint/flash sweeping across, and a clean settle. Punchy and joyful \
+            but tidy — it plays once.",
+        "win_big" | "bigwin" | "big_win" => "A big win: a stronger, bouncier pop with an impact \
+            shake, a flash sweeping the whole symbol, loose parts whipping and following through — \
+            everything reacts. Bigger and looser than a normal win, still readable.",
+        "mega_win" | "megawin" | "mega" | "jackpot" => "A huge, over-the-top celebration: a deep \
+            squash-and-stretch pop, a hard impact, a big flash and shimmer, maybe a flourish or \
+            spin — maximal energy while staying legible. The showstopper.",
+        "bonus" | "feature" | "trigger" => "A feature-trigger flourish: a flourish or spin, a burst \
+            of light, then a confident pop into a held, glowing 'you unlocked it' pose.",
+        "expand" | "grow" => "The symbol grows to fill the reel: it scales up from small with a soft \
+            overshoot and settles, a shimmer sweeping across as it locks into place.",
+        "reveal" | "appear" | "intro" => "The symbol reveals itself: it scales/fades in with a \
+            little overshoot and a glint on arrival — a confident entrance.",
+        "land" | "drop" => "The symbol lands on the reel: a quick drop with a squash on impact and \
+            a bouncy little settle.",
+        "scatter" => "A scatter emphasis: a bright pulse and glint with a small pop, drawing the \
+            eye to a symbol that matters.",
+        "wild" => "A wild emphasis: a slow glowing pulse and shimmer with a subtle sway — premium \
+            and magical, and it loops.",
+        "hover" | "float" => "A weightless floating hover: the symbol bobs gently as if suspended, \
+            with soft secondary drift. Loops.",
+        "celebrate" | "taunt" | "cheer" | "happy" => "A character celebration: an upward pop with \
+            arms/limbs raised, a happy bounce and a glint — full of appeal and personality.",
+        _ => "",
+    };
+    if intent.is_empty() {
+        format!(
+            "Tasteful, premium motion for a \"{}\" state — study the symbol and choose the movement \
+             that best fits what it is and what that state should feel like.",
+            name.trim()
+        )
+    } else {
+        intent.to_string()
+    }
+}
+
 /// Draft a whole clip from a text brief. The model DIRECTS — it assigns a motion primitive
 /// to each bone/slot — and `motion_gen` renders clean, seamlessly-looping keyframes. (LLMs
 /// can't hand-key believable motion; assigning primitives is the reliable half.)
@@ -234,19 +289,48 @@ fn score_clip(clip: &Clip, doc: &StudioDoc) -> f64 {
     (cov_score * 0.6 + variety * 0.4 - busy_penalty).max(0.0)
 }
 
-/// Vision critic: shown the symbol + each candidate's move list, pick the most tasteful/apt index.
+/// One "art direction" pass before any plan: the model studies the symbol and commits to a motion
+/// CONCEPT (hero part, mood, rhythm, one thing to avoid), so the candidates come out focused
+/// instead of scattered. Returns the direction prose (empty string on any failure).
+async fn art_direction(
+    api_key: &str,
+    doc: &StudioDoc,
+    name: &str,
+    brief: &str,
+    image: Option<&[u8]>,
+) -> String {
+    const SYS: &str = "You are a senior slot-game animation director. You are shown the symbol \
+        image. In 2–4 tight sentences give the motion DIRECTION for the requested clip: which \
+        SINGLE part is the hero of the motion, the mood/energy, the rhythm, and ONE thing to \
+        AVOID. Ground it in the materials and shapes you SEE — restrained and premium, never busy. \
+        Return ONLY this JSON object: {\"direction\": \"...\"}.";
+    let user = format!("Skeleton parts:\n{}\n\nClip: {name}\nBrief: {brief}", skeleton_summary(doc));
+    let Ok(content) = chat_json(api_key, SYS, &user, image, 0.6).await else {
+        return String::new();
+    };
+    #[derive(Deserialize)]
+    struct Dir {
+        #[serde(default)]
+        direction: String,
+    }
+    serde_json::from_str::<Dir>(&content).map(|d| d.direction).unwrap_or_default()
+}
+
+/// Vision critic: shown the symbol, the art direction, and each candidate's move list, pick the
+/// index that best REALIZES the direction (tasteful, premium, not busy).
 async fn critic_pick(
     api_key: &str,
     name: &str,
     brief: &str,
+    direction: &str,
     image: Option<&[u8]>,
     clips: &[Clip],
 ) -> Option<usize> {
     const SYS: &str = "You are a senior slot-game animator reviewing candidate motion plans for a \
-        symbol. You are shown the symbol image and several candidate plans (each a list of \
-        target·channel moves). Pick the index of the MOST tasteful and APT plan: motion that suits \
-        the materials you SEE, reads as premium (not busy or cartoonish), and fits the brief and \
-        clip name. Return ONLY this JSON object: {\"pick\": <index>}.";
+        symbol. You see the symbol image, the ART DIRECTION it should realize, and several \
+        candidate plans (each a list of target·channel moves). Pick the index that best REALIZES \
+        the direction and reads as premium for the materials you SEE — tasteful, coordinated, not \
+        busy or cartoonish. Return ONLY this JSON object: {\"pick\": <index>}.";
     let mut desc = String::new();
     for (i, c) in clips.iter().enumerate() {
         let moves: Vec<String> = c
@@ -259,7 +343,7 @@ async fn critic_pick(
             .collect();
         desc.push_str(&format!("Plan {i}: {}\n", moves.join(", ")));
     }
-    let user = format!("Clip: {name}\nBrief: {brief}\nCandidates:\n{desc}");
+    let user = format!("Clip: {name}\nBrief: {brief}\nArt direction: {direction}\nCandidates:\n{desc}");
     let content = chat_json(api_key, SYS, &user, image, 0.2).await.ok()?;
     #[derive(Deserialize)]
     struct Pick {
@@ -280,12 +364,25 @@ pub async fn draft_clip_polished(
     progress: impl Fn(u32, u32, &str),
 ) -> Result<Clip, String> {
     let n = candidates.clamp(2, 5) as usize;
-    let total = (n + 1) as u32; // n drafts + the critic pick
+    let total = (n + 2) as u32; // art direction + n drafts + the critic pick
     let temps = [0.5, 0.9, 0.7, 0.6, 0.85];
-    let user = format!(
-        "Skeleton:\n{}\n\nClip name: {name}\nBrief: {brief}",
-        skeleton_summary(doc)
-    );
+
+    // 1) Commit to a motion concept up front so the candidates are focused, not scattered.
+    progress(1, total, "Reading the symbol & directing…");
+    let direction = art_direction(api_key, doc, name, brief, image).await;
+    if !direction.is_empty() {
+        let short: String = direction.chars().take(90).collect();
+        progress(1, total, &format!("Direction: {short}"));
+    }
+
+    let user = if direction.is_empty() {
+        format!("Skeleton:\n{}\n\nClip name: {name}\nBrief: {brief}", skeleton_summary(doc))
+    } else {
+        format!(
+            "Skeleton:\n{}\n\nClip name: {name}\nBrief: {brief}\nArt direction (follow this closely): {direction}",
+            skeleton_summary(doc)
+        )
+    };
     let slug: String = name
         .to_lowercase()
         .chars()
@@ -297,7 +394,7 @@ pub async fn draft_clip_polished(
 
     let mut clips: Vec<Clip> = Vec::new();
     for i in 0..n {
-        progress((i + 1) as u32, total, &format!("Drafting candidate {} of {n}…", i + 1));
+        progress((i + 2) as u32, total, &format!("Drafting candidate {} of {n}…", i + 1));
         let Ok(content) =
             chat_json(api_key, super::motion_gen::PLAN_SYSTEM, &user, image, temps[i % temps.len()])
                 .await
@@ -323,8 +420,8 @@ pub async fn draft_clip_polished(
     if clips.len() == 1 {
         return Ok(clips.into_iter().next().unwrap());
     }
-    progress(total, total, "Scoring & picking the best…");
-    let k = critic_pick(api_key, name, brief, image, &clips)
+    progress(total, total, "Judging against the direction…");
+    let k = critic_pick(api_key, name, brief, &direction, image, &clips)
         .await
         .unwrap_or(0)
         .min(clips.len() - 1);
@@ -488,6 +585,22 @@ mod tests {
         );
         d.bones.push(crate::studio::doc::Bone::new("head", Some("body".into()), 500.0, 200.0));
         d
+    }
+
+    #[test]
+    fn type_intent_is_curated_for_known_types_and_generic_for_custom() {
+        // Canonical slot-game types get a specific, on-convention concept…
+        let win = type_intent("win").to_lowercase();
+        assert!(win.contains("pop") || win.contains("celebrat"), "win → celebratory pop: {win}");
+        let idle = type_intent("idle").to_lowercase();
+        assert!(idle.contains("rest") || idle.contains("idle") || idle.contains("breath"));
+        // …case/underscore-insensitive aliases resolve to the same family…
+        assert_eq!(type_intent("Win_Big"), type_intent("bigwin"));
+        assert_eq!(type_intent("MEGA_WIN"), type_intent("megawin"));
+        // …and an unknown name still yields a usable, non-empty intent that names the state.
+        let custom = type_intent("shimmer_taunt");
+        assert!(!custom.trim().is_empty());
+        assert!(custom.contains("shimmer_taunt"), "generic intent should name the state: {custom}");
     }
 
     #[test]
@@ -726,5 +839,105 @@ mod tests {
             clip.timelines.iter().any(|t| matches!(t.target, TimelineTarget::SlotAttachment(_)));
         eprintln!("ripple(deform)={has_deform}  blink(attachment)={has_attach}");
         assert!(has_deform || has_attach, "director reached for at least one new primitive");
+    }
+
+    /// Env-gated, NO API: hand-build a "living idle" plan, render it, and graph the ACTUAL motion
+    /// curves — organic (not bare sines), staggered per bone, every track loop-closed. Run:
+    ///   WF_MOTION_DUMP=/…/out cargo test --lib studio::motion::tests::living_idle_dump -- --nocapture
+    #[test]
+    fn living_idle_dump() {
+        let Some(out) = std::env::var_os("WF_MOTION_DUMP") else {
+            return;
+        };
+        let out = std::path::PathBuf::from(out);
+        std::fs::create_dir_all(&out).unwrap();
+
+        use crate::studio::doc::{Bone, Slot};
+        let mut doc = StudioDoc::seed(
+            SourceRef { variation_id: "v".into(), width: 600, height: 600, sha256: "s".into() },
+            0.0,
+        );
+        doc.bones.push(Bone::new("head", Some("body".into()), 300.0, 180.0));
+        doc.bones.push(Bone::new("arm", Some("body".into()), 380.0, 320.0));
+        doc.bones.push(Bone::new("cape", Some("body".into()), 300.0, 340.0));
+        doc.bones.push(Bone::new("cape_seg2", Some("cape".into()), 300.0, 460.0));
+        doc.slots.push(Slot {
+            name: "gem".into(), bone: "body".into(), part_id: "gem".into(),
+            attachment: Default::default(), blend: Default::default(), alternates: vec![],
+        });
+
+        use crate::studio::motion_gen::{render_plan, MoveDraft, PlanDraft};
+        let osc = |target: &str, kind: &str, amp: f64| MoveDraft {
+            target: target.into(), kind: kind.into(), amp: Some(amp),
+            cycles: Some(2.0), phase: None, color: None, to: None, at: None,
+        };
+        let plan = PlanDraft {
+            duration: 4.0,
+            looping: Some(true),
+            moves: vec![
+                osc("body", "shift", 8.0),      // weight-shift anchor
+                osc("body", "breathe", 0.03),   // breath
+                osc("head", "sway", 5.0),       // secondary…
+                osc("arm", "swing", 10.0),
+                osc("cape", "swing", 14.0),
+                osc("cape_seg2", "swing", 18.0), // …cascading outward with follow-through
+                MoveDraft { target: "gem".into(), kind: "glint".into(), amp: None, cycles: Some(2.0), phase: None, color: Some("ffcc66".into()), to: None, at: None },
+            ],
+        };
+        let clip = render_plan(&doc, "idle", "idle", plan);
+
+        eprintln!("=== living idle: {} tracks ===", clip.timelines.len());
+        for tl in &clip.timelines {
+            let (t, ch) = target_parts(&tl.target);
+            let closed = tl
+                .keys
+                .first()
+                .zip(tl.keys.last())
+                .map(|(a, b)| a.v.iter().zip(&b.v).all(|(x, y)| (x - y).abs() < 1e-6))
+                .unwrap_or(true);
+            eprintln!("  {t:>10} · {ch:<9} {:>2} keys  loop-closed={closed}", tl.keys.len());
+            assert!(closed, "every idle track loops");
+        }
+
+        fn line(img: &mut image::RgbaImage, x0: f64, y0: f64, x1: f64, y1: f64, c: [u8; 3]) {
+            let (w, h) = img.dimensions();
+            let steps = ((x1 - x0).abs().max((y1 - y0).abs())).ceil() as i32 + 1;
+            for i in 0..=steps {
+                let f = i as f64 / steps.max(1) as f64;
+                let (x, y) = ((x0 + (x1 - x0) * f) as i32, (y0 + (y1 - y0) * f) as i32);
+                if x >= 0 && y >= 0 && (x as u32) < w && (y as u32) < h {
+                    img.put_pixel(x as u32, y as u32, image::Rgba([c[0], c[1], c[2], 255]));
+                }
+            }
+        }
+        let rows = clip.timelines.len().max(1) as u32;
+        let (w, rh) = (440u32, 66u32);
+        let mut img = image::RgbaImage::from_pixel(w, rh * rows, image::Rgba([18, 19, 23, 255]));
+        let n = 180usize;
+        for (i, tl) in clip.timelines.iter().enumerate() {
+            let y0 = i as u32 * rh;
+            for x in 0..w {
+                img.put_pixel(x, y0, image::Rgba([40, 41, 46, 255]));
+            }
+            let samples: Vec<Vec<f64>> =
+                (0..=n).map(|s| value_at(tl, clip.duration * s as f64 / n as f64)).collect();
+            for c in 0..tl.target.components().unwrap_or(0) {
+                let vals: Vec<f64> = samples.iter().map(|s| s[c]).collect();
+                let (lo, hi) = vals.iter().fold((f64::MAX, f64::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+                let span = (hi - lo).max(1e-6);
+                let col = [[230, 120, 120], [120, 200, 230], [130, 220, 150]][c % 3];
+                let mut prev: Option<(f64, f64)> = None;
+                for (s, &v) in vals.iter().enumerate() {
+                    let x = s as f64 / n as f64 * (w - 1) as f64;
+                    let y = y0 as f64 + rh as f64 - 6.0 - (v - lo) / span * (rh as f64 - 12.0);
+                    if let Some((px, py)) = prev {
+                        line(&mut img, px, py, x, y, col);
+                    }
+                    prev = Some((x, y));
+                }
+            }
+        }
+        image::DynamicImage::ImageRgba8(img).save(out.join("living_idle.png")).unwrap();
+        eprintln!("wrote {}/living_idle.png", out.display());
     }
 }
