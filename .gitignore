@@ -18,3 +18,9 @@ vite.config.ts.timestamp-*
 
 # OS noise
 *.log
+
+# Playwright (headless component harness)
+/test-results/
+/playwright-report/
+/blob-report/
+/tests/visual/__artifacts__/

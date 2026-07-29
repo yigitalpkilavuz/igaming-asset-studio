@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "test:visual": "playwright test --project=chromium",
+    "test:visual:webkit": "playwright test --project=webkit",
     "tauri": "tauri"
   },
   "license": "MIT",
@@ -32,6 +34,7 @@
   },
   "devDependencies": {
     "@esotericsoftware/spine-core": "4.2.74",
+    "@playwright/test": "^1.62.0",
     "@sveltejs/adapter-static": "^3.0.6",
     "@sveltejs/kit": "^2.9.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
