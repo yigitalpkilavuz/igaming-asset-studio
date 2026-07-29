@@ -20,6 +20,10 @@ pub enum AssetKind {
     SceneLayer,
     /// Standalone alpha set-piece object, not bound to the reel grid.
     SceneSprite,
+    /// A looping/one-shot music bed (base game, free spins, big-win jingle).
+    Music,
+    /// A short sound effect (spin, reel stop, win tick, UI click…).
+    Sfx,
 }
 
 /// How an asset is produced. Only `Raster` assets flow through the generation loop;
@@ -36,6 +40,10 @@ pub enum Production {
     RuntimeFont,
     /// Requires an external authoring tool (e.g. 9-slice measured by hand, Spine).
     ManualTool,
+    /// Generatable audio (goes through the audio providers + ffmpeg post-processing).
+    /// Deliberately NOT `Raster` so it bypasses every image path (generate/process/export/
+    /// tone-gate/UI); the audio stages branch off at the four dedicated hook points.
+    Audio,
 }
 
 /// Output file formats an asset must ship in.
@@ -47,6 +55,14 @@ pub enum Format {
     Jpg,
     /// A `<name>.9.json` inset descriptor accompanies the raster (ASSETS.md §4).
     NineSliceJson,
+    /// Ogg/Vorbis — primary audiosprite twin for Chrome/Firefox (Howler-picked first).
+    Ogg,
+    /// MPEG-4/AAC audiosprite twin (Safari + everywhere).
+    M4a,
+    /// MP3 — universal audiosprite fallback twin.
+    Mp3,
+    /// AC-3 audiosprite twin (Safari).
+    Ac3,
 }
 
 /// 9-slice border insets in author px on the source raster (ASSETS.md §4).

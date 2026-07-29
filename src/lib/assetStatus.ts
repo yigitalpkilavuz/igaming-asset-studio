@@ -16,7 +16,9 @@ export function assetStatus(rec?: AssetRecord): AssetStatus {
   const generated = (rec?.variations?.length ?? 0) > 0;
   const active =
     rec?.variations?.find((v) => v.id === rec?.activeVariation) ?? null;
-  const processed = !!active?.stages?.some((s) => s.name === "webp");
+  // "processed" = a shippable final exists: webp for images, the normalized wav for audio
+  // (audio ships as one baked Howler audiosprite at export, not per-asset files).
+  const processed = !!active?.stages?.some((s) => s.name === "webp" || s.name === "wav");
   const step = (hasPrompt ? 1 : 0) + (generated ? 1 : 0) + (processed ? 1 : 0);
   return {
     hasPrompt,

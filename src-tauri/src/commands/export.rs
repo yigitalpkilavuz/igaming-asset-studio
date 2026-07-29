@@ -74,12 +74,20 @@ pub fn publish_finals(
     let dest = std::path::Path::new(&dest_dir);
 
     let records = storage::list_asset_records(&base, &game_id)?;
+    // Audio isn't a per-asset file — every cue bakes into ONE Howler audiosprite (below), so its
+    // records are skipped in the per-asset loop.
+    let audio_keys: std::collections::HashSet<String> = storage::read_project(&base, &game_id)
+        .map(|p| p.config.audio.cues.iter().map(|c| c.key.clone()).collect())
+        .unwrap_or_default();
     let mut copied = Vec::new();
     let mut skipped = Vec::new();
 
     for rec in &records {
         // When a selection was given, publish only those assets.
         if !keys.is_empty() && !keys.contains(&rec.key) {
+            continue;
+        }
+        if audio_keys.contains(&rec.key) {
             continue;
         }
         if rec.template_only {
@@ -119,6 +127,13 @@ pub fn publish_finals(
             Ok(_) => copied.push(rec.key.clone()),
             Err(e) => skipped.push(PublishSkip { key: rec.key.clone(), reason: format!("copy failed: {e}") }),
         }
+    }
+
+    // Audio: bake every ready cue into one Howler audiosprite under <dest>/audio/ (all-or-nothing,
+    // so it ignores a partial selection). No-op when the game ships no audio.
+    match export::publish_audio_sprite(&base, &game_id, dest) {
+        Ok(keys) => copied.extend(keys),
+        Err(e) => skipped.push(PublishSkip { key: "audio".into(), reason: e }),
     }
 
     // Remember the destination for one-click re-publish.

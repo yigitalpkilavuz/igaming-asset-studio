@@ -17,6 +17,10 @@ pub const OPENAI_KEY: &str = "openai_api_key";
 pub const GEMINI_KEY: &str = "gemini_api_key";
 pub const SPRITECOOK_KEY: &str = "spritecook_api_key";
 pub const GAMELAB_KEY: &str = "gamelab_api_key";
+/// Stability AI key — the Stable Audio (music + SFX) provider.
+pub const STABILITY_KEY: &str = "stability_api_key";
+/// Google Cloud OAuth access token for Vertex AI (the Lyria music provider).
+pub const VERTEX_KEY: &str = "google_vertex_token";
 
 fn entry(key: &str) -> Result<Entry, String> {
     Entry::new(SERVICE, key).map_err(|e| format!("keychain error: {e}"))

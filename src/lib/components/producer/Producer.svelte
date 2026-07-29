@@ -141,7 +141,8 @@
       .deriveAssets(snap)
       .then((a) => {
         if (!cancelled) {
-          assets = a;
+          // Audio (music/sfx) is authored on the dedicated Sound section, not here.
+          assets = a.filter((x) => x.production !== "audio");
           deriveError = "";
         }
       })

@@ -4,8 +4,12 @@
    * driven headlessly (see tests/visual/*.spec.ts, Playwright WebKit). Never shipped to users;
    * client-only (+page.ts sets ssr=false). URL: /harness?c=GamePreview&fixture=lightning
    */
-  import { installMock } from "$lib/harness/fixtures";
+  import { installMock, audioAsset, audioConfig } from "$lib/harness/fixtures";
+  import type { AssetDescriptor, GameConfig } from "$lib/ipc";
   import GamePreview from "$lib/components/preview/GamePreview.svelte";
+  import AudioBench from "$lib/components/producer/AudioBench.svelte";
+  import SoundStudio from "$lib/components/sound/SoundStudio.svelte";
+  import SettingsModal from "$lib/components/SettingsModal.svelte";
 
   const params = new URLSearchParams(window.location.search);
   const component = params.get("c") ?? "GamePreview";
@@ -19,6 +23,16 @@
 <div class="harness-root" data-component={component} data-fixture={fixture}>
   {#if component === "GamePreview"}
     <GamePreview gameId="mock" />
+  {:else if component === "AudioBench"}
+    <AudioBench
+      gameId="mock"
+      asset={audioAsset as unknown as AssetDescriptor}
+      config={audioConfig as unknown as GameConfig}
+    />
+  {:else if component === "SoundStudio"}
+    <SoundStudio gameId="mock" />
+  {:else if component === "SettingsModal"}
+    <SettingsModal />
   {:else}
     <p class="unknown">Unknown component: <code>{component}</code></p>
   {/if}

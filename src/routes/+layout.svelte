@@ -9,6 +9,7 @@
     { key: "library", label: "Library" },
     { key: "produce", label: "Produce" },
     { key: "animate", label: "Animate" },
+    { key: "sound", label: "Sound" },
     { key: "preview", label: "Preview" },
   ];
   /** Produce/Animate need an open game (Produce also allows the new-game blueprint). */

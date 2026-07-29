@@ -7,7 +7,7 @@ import type { GameConfig } from "$lib/ipc";
  *  - `preview`: the Game preview — the real assets composed into a slot screen.
  *  The open game is STICKY: visiting the Library keeps it loaded in the other sections
  *  until another game is opened. */
-export type Section = "library" | "produce" | "animate" | "preview";
+export type Section = "library" | "produce" | "animate" | "sound" | "preview";
 
 export const appState = $state<{
   section: Section;
@@ -109,6 +109,13 @@ export function goLayers(gameId: string, assetKey: string) {
 /** Select an asset within the Animate section. */
 export function selectAnimateAsset(assetKey: string | null) {
   appState.animateAssetKey = assetKey;
+}
+
+/** Open the Sound studio — manage/generate the game's music + SFX cues. */
+export function goSound(gameId: string) {
+  appState.gameId = gameId;
+  appState.newGame = false;
+  appState.section = "sound";
 }
 
 /** Open the Game preview for a game (the real assets composed into a slot screen). */

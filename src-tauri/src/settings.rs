@@ -28,6 +28,18 @@ fn default_openai_vision_model() -> String {
     "gpt-4o".to_string()
 }
 
+fn default_stable_audio_model() -> String {
+    "stable-audio-2".to_string()
+}
+
+fn default_lyria_model() -> String {
+    "lyria-002".to_string()
+}
+
+fn default_vertex_location() -> String {
+    "us-central1".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -50,6 +62,18 @@ pub struct AppSettings {
     /// (`<app_data_dir>/projects`). Lets projects live inside a repo or on an SSD.
     #[serde(default)]
     pub projects_root: String,
+    /// Stability "Stable Audio" model id (music + SFX provider).
+    #[serde(default = "default_stable_audio_model")]
+    pub stable_audio_model: String,
+    /// Google Lyria model id on Vertex AI.
+    #[serde(default = "default_lyria_model")]
+    pub lyria_model: String,
+    /// Google Cloud project id for Vertex AI (the Lyria provider).
+    #[serde(default)]
+    pub vertex_project: String,
+    /// Vertex AI region, e.g. `us-central1`.
+    #[serde(default = "default_vertex_location")]
+    pub vertex_location: String,
 }
 
 impl Default for AppSettings {
@@ -61,6 +85,10 @@ impl Default for AppSettings {
             spritecook_model: default_spritecook_model(),
             openai_vision_model: default_openai_vision_model(),
             projects_root: String::new(),
+            stable_audio_model: default_stable_audio_model(),
+            lyria_model: default_lyria_model(),
+            vertex_project: String::new(),
+            vertex_location: default_vertex_location(),
         }
     }
 }

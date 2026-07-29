@@ -146,12 +146,130 @@ const record = (key: string) => ({
   templateOnly: false,
 });
 
-type Fixture = { project: unknown; descriptors: unknown; records: unknown[]; imageFor: (k: string) => string };
+type Fixture = {
+  project: unknown;
+  descriptors: unknown;
+  records: unknown[];
+  imageFor: (k: string) => string;
+  settings?: unknown;
+  imageProviders?: unknown[];
+  keys?: Record<string, boolean>;
+  projectsRoot?: string;
+};
+// ── AudioBench fixture ──────────────────────────────────────────────────────────────────────
+// A tiny valid (0-sample) WAV so the <audio> player has a loadable src without a binary fixture.
+const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+const AUDIO_PROVIDERS = [
+  { id: "stable_audio", displayName: "Stable Audio", doesMusic: true, doesSfx: true, configured: true },
+  { id: "lyria", displayName: "Google Lyria", doesMusic: true, doesSfx: false, configured: false },
+];
+const audioCue = {
+  key: "bgm_main",
+  kind: "music",
+  name: "Base-game music",
+  description: "the main ambient background music bed, seamless loop",
+  provider: "",
+  looped: true,
+  gain: 0.7,
+  targetSecs: 30,
+};
+export const audioAsset = {
+  key: "bgm_main",
+  kind: "music",
+  category: "music",
+  specRef: "§audio",
+  production: "audio",
+  authorW: null,
+  authorH: null,
+  formats: ["ogg", "m4a", "mp3", "ac3"],
+  nineSlice: null,
+  required: true,
+  description: audioCue.description,
+};
+export const audioConfig = {
+  ...lightningConfig,
+  hasAudio: true,
+  audio: { cues: [audioCue], defaultProvider: "stable_audio", stylePrompt: "dark baroque orchestral" },
+};
+const audioRecord = {
+  key: "bgm_main",
+  prompt: { subject: "bgm_main", overridePrompt: "" },
+  variations: [
+    {
+      id: "v001",
+      parent: null,
+      createdAt: 0,
+      promptSnapshot: audioCue.description,
+      provider: "stable_audio",
+      model: null,
+      seed: null,
+      rawFile: "variations/v001/raw.wav",
+      status: "ready",
+      background: "opaque",
+      // Processed audio = one normalized wav (baked into the audiosprite at export).
+      stages: [{ name: "wav", file: "stages/final.wav" }],
+      massReport: null,
+      toneReport: null,
+      audioReport: { durationSecs: 30, lufs: -16, peakDbtp: -1 },
+      locked: false,
+    },
+  ],
+  activeVariation: "v001",
+  templateOnly: false,
+};
+
+// ── SettingsModal fixture ─────────────────────────────────────────────────────────────────────
+// A realistic mix: some cloud keys configured (green pills / chips), others not (so the "set up ↓"
+// overview chips + the fix-scroll flow are exercised).
+const settingsData = {
+  drawThingsUrl: "http://127.0.0.1:7860",
+  openaiImageModel: "gpt-image-2",
+  geminiImageModel: "gemini-3.1-flash-image-preview",
+  spritecookModel: "gemini-3.1-flash-image",
+  openaiVisionModel: "gpt-4o",
+  projectsRoot: "",
+  stableAudioModel: "stable-audio-2",
+  lyriaModel: "lyria-002",
+  vertexProject: "",
+  vertexLocation: "us-central1",
+};
+const IMAGE_PROVIDERS = [
+  { id: "openai_image", displayName: "OpenAI", supportsSeed: true, nativeAlpha: false, supportsRefs: true, configured: true },
+  { id: "gemini_image", displayName: "Gemini", supportsSeed: false, nativeAlpha: true, supportsRefs: true, configured: true },
+  { id: "spritecook", displayName: "SpriteCook", supportsSeed: false, nativeAlpha: true, supportsRefs: false, configured: false },
+  { id: "gamelab", displayName: "Gamelab Studio", supportsSeed: false, nativeAlpha: true, supportsRefs: false, configured: false },
+  { id: "drawthings", displayName: "Draw Things", supportsSeed: true, nativeAlpha: false, supportsRefs: false, configured: false },
+];
+const SETTINGS_KEYS: Record<string, boolean> = {
+  openai_key_present: true,
+  gemini_key_present: true,
+  spritecook_key_present: false,
+  gamelab_key_present: false,
+  stability_key_present: true,
+  vertex_token_present: false,
+};
+
 const FIXTURES: Record<string, Fixture> = {
+  settings: {
+    project: { schemaVersion: 1, config: lightningConfig, createdAt: 0, updatedAt: 0 },
+    descriptors,
+    records: [],
+    imageFor,
+    settings: settingsData,
+    imageProviders: IMAGE_PROVIDERS,
+    keys: SETTINGS_KEYS,
+    projectsRoot: "/Users/you/Games  ·  default (app data dir)",
+  },
   lightning: {
     project: { schemaVersion: 1, config: lightningConfig, createdAt: 0, updatedAt: 0 },
     descriptors,
     records: RECORD_KEYS.map(record),
+    imageFor,
+  },
+  audiobench: {
+    project: { schemaVersion: 1, config: audioConfig, createdAt: 0, updatedAt: 0 },
+    descriptors: [audioAsset],
+    records: [audioRecord],
     imageFor,
   },
 };
@@ -171,6 +289,30 @@ export function mockInvoke(fixtureName: string, cmd: string, args: Record<string
     case "get_variation_stage_image":
     case "get_variation_image":
       return fx.imageFor(String(args.assetKey ?? ""));
+    case "list_audio_providers":
+      return AUDIO_PROVIDERS;
+    case "get_variation_audio":
+      return SILENT_WAV;
+    case "generate_audio_variation":
+    case "process_audio_variation":
+    case "set_active_variation":
+      return fx.records[0];
+    case "save_project_config":
+      return fx.project;
+    // ── SettingsModal ──
+    case "get_settings":
+      return fx.settings ?? null;
+    case "list_image_providers":
+      return fx.imageProviders ?? [];
+    case "projects_root_path":
+      return fx.projectsRoot ?? "";
+    case "openai_key_present":
+    case "gemini_key_present":
+    case "spritecook_key_present":
+    case "gamelab_key_present":
+    case "stability_key_present":
+    case "vertex_token_present":
+      return fx.keys?.[cmd] ?? false;
     default:
       return null; // any unmocked command resolves to null (typedError → {status:"ok",data:null})
   }

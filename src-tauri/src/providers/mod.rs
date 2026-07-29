@@ -1,6 +1,7 @@
 //! Pluggable image-generation providers. Adding a provider = implement `ImageProvider`
 //! and register it in `build_provider`.
 
+pub mod audio;
 pub mod drawthings;
 pub mod gamelab;
 pub mod gemini_image;

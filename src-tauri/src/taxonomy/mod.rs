@@ -661,6 +661,31 @@ the game typesets the localized word onto it at runtime.",
         "Splash hero art, portrait.",
     ));
 
+    // Audio (music + SFX) — a fully config-driven cue list. `Production::Audio` keeps these
+    // out of every image path; they branch off at the audio generate/process/export hooks.
+    if config.has_audio {
+        use crate::model::game_config::AudioKind;
+        for cue in &config.audio.cues {
+            let (kind, category) = match cue.kind {
+                AudioKind::Music => (AssetKind::Music, "music"),
+                AudioKind::Sfx => (AssetKind::Sfx, "sfx"),
+            };
+            out.push(Rule::make(
+                cue.key.clone(),
+                kind,
+                category,
+                "§audio",
+                Production::Audio,
+                None,
+                // Delivered as one Howler audiosprite (dist/audio/sounds.*) baked at export.
+                vec![Format::Ogg, Format::M4a, Format::Mp3, Format::Ac3],
+                None,
+                true,
+                cue.description.clone(),
+            ));
+        }
+    }
+
     out
 }
 

@@ -2,7 +2,8 @@
 //! emit the §17 `assets.ts` manifest snippet. Also runs the §18 readiness check.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -32,7 +33,8 @@ pub struct ExportReport {
     pub blocked: bool,
 }
 
-/// Preload set (§17) — assets needed before first interaction.
+/// Preload set (§17) — assets needed before first interaction. (Audio is one `sound` audiosprite
+/// asset, always preloaded — see `audio_asset_entry` — so it isn't listed here.)
 fn is_preload(key: &str) -> bool {
     key.starts_with("bg_base_") || key.starts_with("splash_hero_")
 }
@@ -227,8 +229,23 @@ pub fn build_dist_gated(base: &Path, game_id: &str, force: bool) -> Result<Expor
     let mut missing = Vec::new();
     let mut waived = Vec::new();
     let mut manifest_entries: Vec<String> = Vec::new();
+    let mut audio_takes: Vec<AudioTake> = Vec::new();
 
     for asset in &assets {
+        // Audio cues aren't image-processed — collect each ready take; they bake into ONE
+        // Howler audiosprite (dist/audio/sounds.*) after the loop.
+        if asset.production == Production::Audio {
+            if let Some(cue) = project.config.audio.cues.iter().find(|c| c.key == asset.key) {
+                match audio_take(base, game_id, asset, cue)? {
+                    Some(take) => {
+                        written.push(asset.key.clone());
+                        audio_takes.push(take);
+                    }
+                    None => missing.push(asset.key.clone()),
+                }
+            }
+            continue;
+        }
         if asset.production != Production::Raster {
             waived.push(asset.key.clone());
             continue;
@@ -284,6 +301,13 @@ pub fn build_dist_gated(base: &Path, game_id: &str, force: bool) -> Result<Expor
     if let Some(scene_json) = emit_scene_manifest(&project.config) {
         fs::write(dist_root.join("scene.json"), scene_json)
             .map_err(|e| format!("write scene.json failed: {e}"))?;
+    }
+
+    // Audio: bake ALL cues into ONE Howler audiosprite (dist/audio/sounds.{ogg,m4a,mp3,ac3,json}) —
+    // the exact shape Stake Engine's `utils-sound` loads. Registered as a single assets.ts entry.
+    if !audio_takes.is_empty() {
+        let entry = bake_audio_sprite(&audio_takes, &dist_root)?;
+        manifest_entries.push(entry);
     }
 
     let snippet = render_manifest(&manifest_entries);
@@ -473,8 +497,171 @@ fn export_fx_sheet(
     )))
 }
 
+// ── Audio export: one Howler audiosprite (dist/audio/sounds.*) ──────────────────
+// Stake Engine games load audio as a SINGLE audiosprite — `sounds.ogg/m4a/mp3/ac3` (all cues
+// concatenated, four encodings) + a `sounds.json` sprite-map — registered as one `type: 'audio'`
+// asset and played via `utils-sound` (Howler). We bake it with the `audiosprite` CLI (ffmpeg-based),
+// exactly the tool that produced the web-sdk's own files, then reshape its JSON to Stake's contract.
+
+/// A processed cue ready to bake: its key (→ sprite name), the normalized wav on disk, whether it
+/// loops (→ sprite loop flag + `music`/`loop` player), and its gain (→ `config` volume).
+struct AudioTake {
+    key: String,
+    wav: PathBuf,
+    looped: bool,
+    gain: f32,
+}
+
+/// Resolve a cue's active, processed take (the normalized `final.wav`), or `None` if not ready.
+fn audio_take(
+    base: &Path,
+    game_id: &str,
+    asset: &AssetDescriptor,
+    cue: &crate::model::game_config::AudioCueDef,
+) -> Result<Option<AudioTake>, String> {
+    let Some(record) = storage::read_asset_record(base, game_id, &asset.key)? else {
+        return Ok(None);
+    };
+    let Some(active_id) = record.active_variation.clone() else {
+        return Ok(None);
+    };
+    let Some(variation) = record.variations.iter().find(|v| v.id == active_id) else {
+        return Ok(None);
+    };
+    // Must be processed (the normalized wav exists).
+    let Some(stage) = variation.stages.iter().find(|s| s.name == "wav") else {
+        return Ok(None);
+    };
+    let wav = storage::variation_dir(base, game_id, &asset.key, &active_id).join(&stage.file);
+    if !wav.is_file() {
+        return Ok(None);
+    }
+    Ok(Some(AudioTake { key: asset.key.clone(), wav, looped: cue.looped, gain: cue.gain }))
+}
+
+/// Concatenate every processed cue into ONE Howler audiosprite via the `audiosprite` CLI and write
+/// `dist/audio/sounds.{ogg,m4a,mp3,ac3,json}`. Returns the single `assets.ts` entry that registers
+/// it. `ogg` (Vorbis) is included only when this ffmpeg has libvorbis — audiosprite aborts the whole
+/// bake if any requested encoder is missing, and m4a+mp3+ac3 already cover every browser.
+fn bake_audio_sprite(takes: &[AudioTake], dist_root: &Path) -> Result<String, String> {
+    if crate::processing::which("audiosprite").is_none() {
+        return Err("audiosprite is not installed — required to bake the game audio sprite (`npm i -g audiosprite`; needs ffmpeg).".into());
+    }
+    let audio_dir = dist_root.join("audio");
+    fs::create_dir_all(&audio_dir).map_err(|e| format!("create audio dir: {e}"))?;
+
+    // audiosprite names each sprite after its input file's basename → stage each take as `<key>.wav`
+    // in a temp inputs dir, in config order so the sprite offsets are deterministic.
+    let in_dir = audio_dir.join("_in");
+    let _ = fs::remove_dir_all(&in_dir);
+    fs::create_dir_all(&in_dir).map_err(|e| format!("create audio inputs dir: {e}"))?;
+    let mut inputs: Vec<PathBuf> = Vec::new();
+    for t in takes {
+        let named = in_dir.join(format!("{}.wav", t.key));
+        fs::copy(&t.wav, &named).map_err(|e| format!("stage {} for sprite: {e}", t.key))?;
+        inputs.push(named);
+    }
+
+    let formats = if crate::processing::ffmpeg_has_libvorbis() {
+        "ogg,m4a,mp3,ac3"
+    } else {
+        "m4a,mp3,ac3"
+    };
+
+    let out_base = audio_dir.join("sounds");
+    let mut cmd = Command::new("audiosprite");
+    cmd.args(["--format", "howler2", "--export", formats, "--channels", "2", "--path", "./assets/audio"])
+        .arg("--output")
+        .arg(&out_base);
+    for t in takes.iter().filter(|t| t.looped) {
+        cmd.args(["--loop", &t.key]);
+    }
+    for i in &inputs {
+        cmd.arg(i);
+    }
+
+    let out = cmd.output().map_err(|e| format!("audiosprite failed to launch: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let tail: String = err.lines().rev().take(4).collect::<Vec<_>>().join(" ").chars().take(400).collect();
+        return Err(format!("audiosprite error: {tail}"));
+    }
+    let _ = fs::remove_dir_all(&in_dir);
+
+    // audiosprite emits howler2 JSON ({src, sprite}); reshape to Stake's exact {src, sprite, config}.
+    finalize_sounds_json(&out_base.with_extension("json"), takes)?;
+    Ok(audio_asset_entry())
+}
+
+/// Reshape audiosprite's howler2 JSON into Stake's contract: keep the `sprite` map, rebuild `src` to
+/// canonical `./assets/audio/sounds.<ext>` for the formats actually written, and add the per-cue
+/// `config` volume map from each cue's gain.
+fn finalize_sounds_json(json_path: &Path, takes: &[AudioTake]) -> Result<(), String> {
+    let raw = fs::read_to_string(json_path).map_err(|e| format!("read sounds.json: {e}"))?;
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("parse sounds.json: {e}"))?;
+
+    let dir = json_path.parent().unwrap_or_else(|| Path::new("."));
+    let src: Vec<serde_json::Value> = ["ogg", "m4a", "mp3", "ac3"]
+        .iter()
+        .filter(|ext| dir.join(format!("sounds.{ext}")).is_file())
+        .map(|ext| serde_json::Value::String(format!("./assets/audio/sounds.{ext}")))
+        .collect();
+
+    let config: serde_json::Map<String, serde_json::Value> = takes
+        .iter()
+        .map(|t| {
+            // Round to 3 dp so f32 gains serialize cleanly (0.7, not 0.69999998).
+            let volume = ((t.gain as f64) * 1000.0).round() / 1000.0;
+            (t.key.clone(), serde_json::json!({ "volume": volume }))
+        })
+        .collect();
+
+    if let Some(obj) = doc.as_object_mut() {
+        obj.insert("src".into(), serde_json::Value::Array(src));
+        obj.insert("config".into(), serde_json::Value::Object(config));
+    }
+    let pretty = serde_json::to_string_pretty(&doc).map_err(|e| format!("serialize sounds.json: {e}"))?;
+    fs::write(json_path, pretty).map_err(|e| format!("write sounds.json: {e}"))
+}
+
+/// The single `assets.ts` entry registering the audiosprite (pixi-svelte `type: 'audio'`), exactly
+/// as the web-sdk example apps declare it. Always preloaded.
+fn audio_asset_entry() -> String {
+    "  sound: { type: 'audio', src: new URL('../../assets/audio/sounds.json', import.meta.url).href, preload: true },".to_string()
+}
+
+/// Bake the game's ready audio cues into a Howler audiosprite under `<dest>/audio/` — the same
+/// artifact `build_dist` writes to `dist/audio/`. Returns the baked cue keys (empty when the game
+/// ships no ready audio). Used by the one-click publish path; the sprite is all-or-nothing, so it
+/// always bakes the full ready set regardless of a partial selection.
+pub fn publish_audio_sprite(base: &Path, game_id: &str, dest: &Path) -> Result<Vec<String>, String> {
+    let project = storage::read_project(base, game_id)?;
+    if !project.config.has_audio {
+        return Ok(Vec::new());
+    }
+    let mut takes = Vec::new();
+    for asset in taxonomy::derive_assets(&project.config) {
+        if asset.production != Production::Audio {
+            continue;
+        }
+        if let Some(cue) = project.config.audio.cues.iter().find(|c| c.key == asset.key) {
+            if let Some(take) = audio_take(base, game_id, &asset, cue)? {
+                takes.push(take);
+            }
+        }
+    }
+    if takes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let keys = takes.iter().map(|t| t.key.clone()).collect();
+    bake_audio_sprite(&takes, dest)?;
+    Ok(keys)
+}
+
 /// Copy one asset's processed finals into dist. Returns the primary (webp) path relative
 /// to the assets root, or `None` if the asset isn't ready.
+
 fn export_one(
     base: &Path,
     game_id: &str,
@@ -589,8 +776,10 @@ fn export_layer_plates(
     for layer in &manifest.layers {
         fs::copy(src_dir.join(&layer.file), dest_dir.join(&layer.file))
             .map_err(|e| format!("copy {} failed: {e}", layer.file))?;
+        // Each layer plate is a single alpha WebP → pixi-svelte `sprite` (one Texture). There is
+        // NO `image` asset type in the web-sdk (RawType = spine|sprite|sprites|spriteSheet|font|audio).
         entries.push(format!(
-            "  {key}_{lid}: {{ type: 'image', src: new URL('../../assets/layers/{category}/{file}', import.meta.url).href }},",
+            "  {key}_{lid}: {{ type: 'sprite', src: new URL('../../assets/layers/{category}/{file}', import.meta.url).href }},",
             lid = layer.id,
             category = asset.category,
             file = layer.file,
@@ -624,6 +813,96 @@ fn render_manifest(entries: &[String]) -> String {
     }
     s.push_str("} as const;\n");
     s
+}
+
+#[cfg(test)]
+mod audio_sprite_tests {
+    use super::*;
+
+    /// `finalize_sounds_json` reshapes howler2 output into Stake's {sprite, src, config} — no
+    /// external tools needed (fakes the audiosprite JSON + touches the format files).
+    #[test]
+    fn sounds_json_is_stake_audiosprite_shaped() {
+        let dir = std::env::temp_dir().join(format!("wf_sprite_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // Pretend audiosprite already wrote its howler2 json + the m4a/mp3/ac3 (no ogg on this box).
+        let json_path = dir.join("sounds.json");
+        fs::write(
+            &json_path,
+            r#"{"src":["assets/audio/sounds.m4a"],"sprite":{"bgm_main":[0,2000,true],"sfx_btn_spin":[3000,1000]}}"#,
+        )
+        .unwrap();
+        for ext in ["m4a", "mp3", "ac3"] {
+            fs::write(dir.join(format!("sounds.{ext}")), b"x").unwrap();
+        }
+        let takes = vec![
+            AudioTake { key: "bgm_main".into(), wav: dir.join("x.wav"), looped: true, gain: 0.7 },
+            AudioTake { key: "sfx_btn_spin".into(), wav: dir.join("y.wav"), looped: false, gain: 1.0 },
+        ];
+        finalize_sounds_json(&json_path, &takes).unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&json_path).unwrap()).unwrap();
+        // sprite preserved (loop flag on bgm_main only).
+        assert_eq!(v["sprite"]["bgm_main"][2], true);
+        assert_eq!(v["sprite"]["sfx_btn_spin"].as_array().unwrap().len(), 2);
+        // src rebuilt canonically for the formats that exist (no ogg → 3 entries, ./ prefix).
+        assert_eq!(v["src"][0], "./assets/audio/sounds.m4a");
+        assert_eq!(v["src"].as_array().unwrap().len(), 3);
+        // config volume map from cue gains.
+        assert_eq!(v["config"]["bgm_main"]["volume"], 0.7);
+        assert_eq!(v["config"]["sfx_btn_spin"]["volume"], 1.0);
+
+        // The single assets.ts entry the web-sdk expects.
+        let entry = audio_asset_entry();
+        assert!(entry.contains("sound: { type: 'audio'"));
+        assert!(entry.contains("assets/audio/sounds.json"));
+        assert!(entry.contains("preload: true"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// End-to-end bake through the real `audiosprite` CLI (skipped when it or ffmpeg is absent).
+    #[test]
+    fn bakes_a_real_audiosprite() {
+        if crate::processing::which("audiosprite").is_none()
+            || !crate::processing::audio::ffmpeg_available()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("wf_bake_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        fs::create_dir_all(&src).unwrap();
+        let mut takes = Vec::new();
+        for (key, freq, looped, gain) in
+            [("bgm_main", "220", true, 0.7f32), ("sfx_btn_spin", "880", false, 1.0)]
+        {
+            let wav = src.join(format!("{key}.wav"));
+            Command::new("ffmpeg")
+                .args(["-y", "-f", "lavfi", "-i", &format!("sine=frequency={freq}:duration=1")])
+                .arg(&wav)
+                .output()
+                .unwrap();
+            takes.push(AudioTake { key: key.into(), wav, looped, gain });
+        }
+        let dist = dir.join("dist");
+        let entry = bake_audio_sprite(&takes, &dist).expect("bake");
+
+        let audio = dist.join("audio");
+        assert!(audio.join("sounds.mp3").is_file(), "mp3 written");
+        assert!(audio.join("sounds.json").is_file(), "sounds.json written");
+        assert!(!audio.join("_in").exists(), "temp inputs cleaned up");
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(audio.join("sounds.json")).unwrap()).unwrap();
+        assert!(v["sprite"]["bgm_main"].is_array(), "cue in sprite map");
+        assert_eq!(v["sprite"]["bgm_main"][2], true, "looped cue flagged");
+        assert_eq!(v["config"]["bgm_main"]["volume"], 0.7);
+        assert!(entry.contains("type: 'audio'"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
@@ -665,6 +944,8 @@ mod tests {
             symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
+            has_audio: false,
+            audio: Default::default(),
         }
     }
 
@@ -701,6 +982,7 @@ mod tests {
                 background: Default::default(),
                 mass_report: None,
             tone_report: None,
+            audio_report: None,
                 locked: false,
                 stages: vec![StageOutput {
                     name: "webp".into(),
@@ -761,6 +1043,7 @@ mod tests {
                 background: Default::default(),
                 mass_report: None,
             tone_report: None,
+            audio_report: None,
                 locked: false,
                 stages: vec![StageOutput { name: "webp".into(), file: "stages/final.webp".into() }],
             }],
@@ -800,10 +1083,11 @@ mod tests {
         assert!(dist.join("layers/backgrounds/bg_base_landscape.fg.webp").is_file());
         // Flat raster path not written for this asset.
         assert!(!dist.join("backgrounds/bg_base_landscape.webp").is_file());
-        // Each layer ships as its OWN flat entry — the code layer owns stacking/motion.
-        assert!(report.manifest_snippet.contains("bg_base_landscape_sky: { type: 'image'"));
-        assert!(report.manifest_snippet.contains("bg_base_landscape_fg: { type: 'image'"));
+        // Each layer ships as its OWN `sprite` entry — the code layer owns stacking/motion.
+        assert!(report.manifest_snippet.contains("bg_base_landscape_sky: { type: 'sprite'"));
+        assert!(report.manifest_snippet.contains("bg_base_landscape_fg: { type: 'sprite'"));
         assert!(!report.manifest_snippet.contains("type: 'parallax'"));
+        assert!(!report.manifest_snippet.contains("type: 'image'"));
         assert!(!report.manifest_snippet.contains("speed:"));
         assert!(report
             .manifest_snippet
@@ -841,6 +1125,7 @@ mod tests {
                 background: Default::default(),
                 mass_report: None,
             tone_report: None,
+            audio_report: None,
                 locked: false,
                 stages: vec![StageOutput { name: "webp".into(), file: "stages/final.webp".into() }],
             }],
@@ -906,6 +1191,8 @@ mod scene_manifest_tests {
             symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
+            has_audio: false,
+            audio: Default::default(),
         };
         // No placements → no manifest at all.
         assert!(emit_scene_manifest(&cfg).is_none());

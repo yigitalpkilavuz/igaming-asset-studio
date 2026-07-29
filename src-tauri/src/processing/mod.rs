@@ -4,6 +4,7 @@
 //! (rembg for background removal, Real-ESRGAN for upscale) run only when the tool is
 //! detected on the system, and are skipped gracefully otherwise.
 
+pub mod audio;
 pub mod chromakey;
 pub mod convert;
 pub mod normalize;
@@ -31,6 +32,16 @@ pub struct Preflight {
     pub upscale: bool,
     /// Resolved path of the upscaler binary, if found.
     pub upscale_bin: Option<String>,
+    /// `ffmpeg` present (required for the audio loudness normalize pass).
+    #[serde(default)]
+    pub ffmpeg: bool,
+    /// `audiosprite` CLI present (bakes all cues into the game's Howler audiosprite at export).
+    #[serde(default)]
+    pub audiosprite: bool,
+    /// Whether this ffmpeg can encode Ogg/Vorbis. When false, the exported audiosprite ships
+    /// m4a+mp3+ac3 (still covers every browser) but skips the `.ogg` twin.
+    #[serde(default)]
+    pub audio_ogg: bool,
 }
 
 /// One produced stage file (relative to the variation dir).
@@ -48,10 +59,25 @@ pub fn detect() -> Preflight {
         rembg: which("rembg").is_some(),
         upscale: upscale_bin.is_some(),
         upscale_bin,
+        ffmpeg: which("ffmpeg").is_some(),
+        audiosprite: which("audiosprite").is_some(),
+        audio_ogg: ffmpeg_has_libvorbis(),
     }
 }
 
-fn which(bin: &str) -> Option<String> {
+/// Whether the ffmpeg on PATH was built with libvorbis (needed for the audiosprite `.ogg` twin).
+/// `audiosprite` aborts the whole bake if a requested encoder is missing, so the export gates the
+/// ogg format on this.
+pub fn ffmpeg_has_libvorbis() -> bool {
+    Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("libvorbis"))
+}
+
+pub(crate) fn which(bin: &str) -> Option<String> {
     let out = Command::new("sh")
         .arg("-c")
         .arg(format!("command -v {bin}"))

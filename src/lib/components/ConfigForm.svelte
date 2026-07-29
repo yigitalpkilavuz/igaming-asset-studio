@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { GameConfig, SymbolRole, WinType } from "$lib/ipc";
+  import { DEFAULT_AUDIO_CUES } from "$lib/audioCues";
 
   let {
     config = $bindable(),
@@ -55,6 +56,15 @@
   };
   const scene = config.scene;
   scene.presets ??= [];
+
+  // Audio system — backfill + seed the default cue list the first time it's enabled.
+  config.audio ??= { cues: [], defaultProvider: "", stylePrompt: "" };
+  function ensureAudioCues() {
+    config.audio ??= { cues: [], defaultProvider: "", stylePrompt: "" };
+    if (config.hasAudio && !(config.audio.cues?.length ?? 0)) {
+      config.audio.cues = DEFAULT_AUDIO_CUES.map((c) => ({ ...c }));
+    }
+  }
   scene.assets ??= [];
   function addPreset() {
     scene.presets = [...(scene.presets ?? []), { key: `preset${(scene.presets?.length ?? 0) + 1}`, width: 2048, height: 1152 }];
@@ -175,6 +185,7 @@
     <label class="check"><input type="checkbox" bind:checked={config.holdAndSpin} /> Hold &amp; spin</label>
     <label class="check"><input type="checkbox" bind:checked={config.hasMeter} /> Collection meter</label>
     <label class="check"><input type="checkbox" bind:checked={config.hasMascot} /> Mascot character</label>
+    <label class="check"><input type="checkbox" bind:checked={config.hasAudio} onchange={ensureAudioCues} /> Audio (music + SFX)</label>
   </fieldset>
 
   {#if config.hasMascot}
@@ -186,6 +197,21 @@
         placeholder="e.g. a gaunt plague-doctor raven clutching a dim lantern"
       ></textarea>
     </label>
+  {/if}
+
+  {#if config.hasAudio && config.audio}
+    <label class="field">
+      <span>Audio style master</span>
+      <textarea
+        rows="2"
+        bind:value={config.audio.stylePrompt}
+        placeholder="the sonic identity, prepended to every cue — e.g. dark baroque orchestral, harpsichord and low strings, ominous"
+      ></textarea>
+    </label>
+    <p class="hint audio-hint">
+      {config.audio.cues?.length ?? 0} cues seeded (base music + core SFX). Tune each sound's prompt in its
+      bench, and add your Stable Audio / Vertex keys in Settings.
+    </p>
   {/if}
 
   {#if config.hasMeter}

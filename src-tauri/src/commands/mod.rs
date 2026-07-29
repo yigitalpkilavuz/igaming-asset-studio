@@ -2,6 +2,7 @@
 //! layers, split by domain.
 
 pub mod assistant;
+pub mod audio;
 pub mod export;
 pub mod generate;
 pub mod glyphs;

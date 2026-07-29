@@ -97,6 +97,28 @@ export const commands = {
 	 *  failed.
 	 */
 	generateVariation: (gameId: string, assetKey: string, providerId: string, referenceKeys: string[], guideKey: string, count: number) => typedError<AssetRecord, string>(__TAURI_INVOKE("generate_variation", { gameId, assetKey, providerId, referenceKeys, guideKey, count })),
+	/**  List the gambling-safe audio providers and whether each is configured. */
+	listAudioProviders: () => typedError<AudioProviderInfo[], string>(__TAURI_INVOKE("list_audio_providers")),
+	/**
+	 *  Generate audio variation(s) for a music/sfx asset — the audio analogue of
+	 *  `generate_variation`. `count` (1–4) requests run concurrently. Returns the updated record;
+	 *  errors only when EVERY request failed.
+	 */
+	generateAudioVariation: (gameId: string, assetKey: string, providerId: string, count: number) => typedError<AssetRecord, string>(__TAURI_INVOKE("generate_audio_variation", { gameId, assetKey, providerId, count })),
+	/**
+	 *  Process an audio variation: ffmpeg loudness-normalize + transcode to the webm+mp3 twins.
+	 *  The audio analogue of `process_variation`. Returns the updated record.
+	 */
+	processAudioVariation: (gameId: string, assetKey: string, variationId: string) => typedError<AssetRecord, string>(__TAURI_INVOKE("process_audio_variation", { gameId, assetKey, variationId })),
+	/**
+	 *  Read an audio file for playback as a `data:` URL with the correct audio mime.
+	 *  `name` = `"raw"` (the generated source) or a stage name (`"wav"` = the normalized take).
+	 */
+	getVariationAudio: (gameId: string, assetKey: string, variationId: string, name: string) => typedError<string, string>(__TAURI_INVOKE("get_variation_audio", { gameId, assetKey, variationId, name })),
+	setStabilityKey: (key: string) => typedError<null, string>(__TAURI_INVOKE("set_stability_key", { key })),
+	stabilityKeyPresent: () => __TAURI_INVOKE<boolean>("stability_key_present"),
+	setVertexToken: (token: string) => typedError<null, string>(__TAURI_INVOKE("set_vertex_token", { token })),
+	vertexTokenPresent: () => __TAURI_INVOKE<boolean>("vertex_token_present"),
 	/**
 	 *  Assemble the sheet prompt for the selected symbols WITHOUT generating — the composer
 	 *  shows it for review; the user may override it wholesale.
@@ -495,6 +517,14 @@ export type AppSettings = {
 	 *  (`<app_data_dir>/projects`). Lets projects live inside a repo or on an SSD.
 	 */
 	projectsRoot?: string,
+	/**  Stability "Stable Audio" model id (music + SFX provider). */
+	stableAudioModel?: string,
+	/**  Google Lyria model id on Vertex AI. */
+	lyriaModel?: string,
+	/**  Google Cloud project id for Vertex AI (the Lyria provider). */
+	vertexProject?: string,
+	/**  Vertex AI region, e.g. `us-central1`. */
+	vertexLocation?: string,
 };
 
 /**  The assembled prompt actually sent to a provider — for live preview in the UI. */
@@ -554,7 +584,11 @@ export type AssetKind = "symbol" | "background" | "reelChrome" | "symbolChrome" 
 /**  Transparent scene element that stacks over a plate at the same canvas. */
 "sceneLayer" | 
 /**  Standalone alpha set-piece object, not bound to the reel grid. */
-"sceneSprite";
+"sceneSprite" | 
+/**  A looping/one-shot music bed (base game, free spins, big-win jingle). */
+"music" | 
+/**  A short sound effect (spin, reel stop, win tick, UI click…). */
+"sfx";
 
 /**
  *  Per-asset working record: the prompt plus every generated variation. Canonical copy
@@ -577,6 +611,64 @@ export type Attachment =
 "region" | 
 /**  Deformable mesh (Phase 7). */
 { mesh: MeshData };
+
+/**  Per-project audio system config. */
+export type AudioConfig = {
+	cues?: AudioCueDef[],
+	/**  Default audio provider id ("" = whatever the bench has selected). */
+	defaultProvider?: string,
+	/**
+	 *  The audio **style master** — the hand-authored sonic identity prepended to every
+	 *  cue prompt (mirrors `GameConfig.style_prompt` for images). Studio owns it.
+	 */
+	stylePrompt?: string,
+};
+
+/**
+ *  One audio cue the game needs — a text-to-audio prompt plus playback metadata that
+ *  rides into `sounds.json`. Mirrors `SceneAssetDef` for the audio class.
+ */
+export type AudioCueDef = {
+	/**
+	 *  Stable key, e.g. `bgm_main`, `sfx_reel_stop_1` (Stake `bgm_`/`sfx_`/`jng_` convention).
+	 *  Becomes the asset key + the audiosprite cue name.
+	 */
+	key: string,
+	kind: AudioKind,
+	name?: string,
+	/**  Prompt core — what this sound IS (feeds the audio provider). */
+	description?: string,
+	/**  Provider override for this cue ("" → the audio class default). */
+	provider?: string,
+	/**  Whether the cue loops seamlessly (music beds, reel-spin whir, win-tick). */
+	looped?: boolean,
+	/**  Playback gain in the manifest, 0–1 (SFX usually sit a little below the music bed). */
+	gain?: number | null,
+	/**  Target duration in seconds the provider should aim for (SFX short, beds longer). */
+	targetSecs?: number | null,
+};
+
+/**  Audio cue sub-type. Music = a bed (often looping); Sfx = a short one-shot/loop. */
+export type AudioKind = "music" | "sfx";
+
+/**  What an audio provider supports, surfaced to the UI. */
+export type AudioProviderInfo = {
+	id: string,
+	displayName: string,
+	doesMusic: boolean,
+	doesSfx: boolean,
+	configured: boolean,
+};
+
+/**  Outcome of the audio Process pass (loudness normalize + transcode). Surfaced in the bench. */
+export type AudioReport = {
+	/**  Clip duration in seconds after trim. */
+	durationSecs: number | null,
+	/**  Measured integrated loudness (LUFS) after the normalize pass. */
+	lufs: number | null,
+	/**  Measured true peak (dBTP) after the normalize pass. */
+	peakDbtp: number | null,
+};
 
 /**  How the background of a generated image was produced — drives post-processing. */
 export type BgMode = 
@@ -727,7 +819,15 @@ export type FitClass = {
 /**  Output file formats an asset must ship in. */
 export type Format = "webp" | "png" | "jpg" | 
 /**  A `<name>.9.json` inset descriptor accompanies the raster (ASSETS.md §4). */
-"nineSliceJson";
+"nineSliceJson" | 
+/**  Ogg/Vorbis — primary audiosprite twin for Chrome/Firefox (Howler-picked first). */
+"ogg" | 
+/**  MPEG-4/AAC audiosprite twin (Safari + everywhere). */
+"m4a" | 
+/**  MP3 — universal audiosprite fallback twin. */
+"mp3" | 
+/**  AC-3 audiosprite twin (Safari). */
+"ac3";
 
 /**
  *  The full, generic game configuration that drives asset derivation. Nothing here is
@@ -782,6 +882,13 @@ export type GameConfig = {
 	symbolProvider?: string,
 	/**  Scene-asset system: plates / layers / set-piece sprites with composition guides. */
 	scene?: SceneConfig,
+	/**
+	 *  Whether the game ships an audio layer (music beds + SFX). Off by default so
+	 *  existing image-only projects are unaffected.
+	 */
+	hasAudio?: boolean,
+	/**  Audio-asset system: cues (music/sfx) generated by the audio providers. */
+	audio?: AudioConfig,
 };
 
 /**
@@ -1034,6 +1141,15 @@ export type Preflight = {
 	upscale: boolean,
 	/**  Resolved path of the upscaler binary, if found. */
 	upscaleBin: string | null,
+	/**  `ffmpeg` present (required for the audio loudness normalize pass). */
+	ffmpeg?: boolean,
+	/**  `audiosprite` CLI present (bakes all cues into the game's Howler audiosprite at export). */
+	audiosprite?: boolean,
+	/**
+	 *  Whether this ffmpeg can encode Ogg/Vorbis. When false, the exported audiosprite ships
+	 *  m4a+mp3+ac3 (still covers every browser) but skips the `.ogg` twin.
+	 */
+	audioOgg?: boolean,
 };
 
 export type PreviewBundle = {
@@ -1055,7 +1171,13 @@ export type Production =
 /**  Rendered from a bitmap font at runtime. */
 "runtimeFont" | 
 /**  Requires an external authoring tool (e.g. 9-slice measured by hand, Spine). */
-"manualTool";
+"manualTool" | 
+/**
+ *  Generatable audio (goes through the audio providers + ffmpeg post-processing).
+ *  Deliberately NOT `Raster` so it bypasses every image path (generate/process/export/
+ *  tone-gate/UI); the audio stages branch off at the four dedicated hook points.
+ */
+"audio";
 
 /**
  *  A persisted project: the game config plus project-level metadata. Canonical copy
@@ -1642,6 +1764,8 @@ export type Variation = {
 	massReport?: MassReport | null,
 	/**  Tone-pass outcome from the last Process run (assets with a tonal band). */
 	toneReport?: ToneReport | null,
+	/**  Audio-processing outcome from the last Process run (audio assets only). */
+	audioReport?: AudioReport | null,
 	/**  Locked/favourited — protected from history pruning (`delete_variation` refuses it). */
 	locked?: boolean,
 };

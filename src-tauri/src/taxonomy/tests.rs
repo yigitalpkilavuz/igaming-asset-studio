@@ -64,6 +64,8 @@ fn babewyn_config() -> GameConfig {
             symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
+            has_audio: false,
+            audio: Default::default(),
     }
 }
 
@@ -106,6 +108,8 @@ fn lines_config() -> GameConfig {
             symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
+            has_audio: false,
+            audio: Default::default(),
     }
 }
 
@@ -352,4 +356,31 @@ fn scene_assets_derive_and_plates_replace_stock_backgrounds() {
     let assets = derive_assets(&cfg);
     assert!(has(&assets, "bg_base_landscape"));
     assert_eq!(find(&assets, "bg_base_landscape").unwrap().category, "backgrounds");
+}
+
+#[test]
+fn audio_cues_derive_only_when_enabled() {
+    use crate::model::game_config::default_audio_cues;
+    let mut cfg = lines_config();
+
+    // Off by default → no audio assets.
+    assert!(!has(&derive_assets(&cfg), "bgm_main"));
+
+    // Enabled with the seed cue list → one descriptor per cue, Audio production, no dims.
+    cfg.has_audio = true;
+    cfg.audio.cues = default_audio_cues();
+    let assets = derive_assets(&cfg);
+
+    let music = find(&assets, "bgm_main").expect("bgm_main derived");
+    assert_eq!(music.kind, AssetKind::Music);
+    assert_eq!(music.production, Production::Audio);
+    assert_eq!(music.category, "music");
+    assert_eq!((music.author_w, music.author_h), (None, None), "audio has no pixel dims");
+
+    let sfx = find(&assets, "sfx_reel_stop_1").expect("sfx_reel_stop_1 derived");
+    assert_eq!(sfx.kind, AssetKind::Sfx);
+    assert_eq!(sfx.category, "sfx");
+    // Delivered as one Howler audiosprite (ogg/m4a/mp3/ac3) baked at export.
+    use crate::model::asset::Format;
+    assert_eq!(sfx.formats, vec![Format::Ogg, Format::M4a, Format::Mp3, Format::Ac3]);
 }

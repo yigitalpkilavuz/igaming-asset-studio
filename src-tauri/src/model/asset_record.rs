@@ -60,9 +60,24 @@ pub struct Variation {
     /// Tone-pass outcome from the last Process run (assets with a tonal band).
     #[serde(default)]
     pub tone_report: Option<ToneReport>,
+    /// Audio-processing outcome from the last Process run (audio assets only).
+    #[serde(default)]
+    pub audio_report: Option<AudioReport>,
     /// Locked/favourited — protected from history pruning (`delete_variation` refuses it).
     #[serde(default)]
     pub locked: bool,
+}
+
+/// Outcome of the audio Process pass (loudness normalize + transcode). Surfaced in the bench.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioReport {
+    /// Clip duration in seconds after trim.
+    pub duration_secs: f64,
+    /// Measured integrated loudness (LUFS) after the normalize pass.
+    pub lufs: f64,
+    /// Measured true peak (dBTP) after the normalize pass.
+    pub peak_dbtp: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]

@@ -705,6 +705,8 @@ mod tests {
             symbol_tone: Default::default(),
             symbol_provider: String::new(),
             scene: Default::default(),
+            has_audio: false,
+            audio: Default::default(),
         }
     }
 
