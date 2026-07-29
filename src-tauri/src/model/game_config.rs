@@ -111,8 +111,11 @@ pub struct SymbolSizing {
     pub canvas: u32,
 }
 
+// The four classes keep a shared `ink / height² ≈ 0.53` invariant, so a typical square-ish symbol
+// hits both its ink and height target with no blend residual, and the ladder scales in lockstep:
+// low < high < wild < scatter. (scatter is nudged a hair above wild so the bonus trigger stands out.)
 fn d_low() -> FitClass {
-    FitClass { ink: 0.19, height: 0.60, tolerance: 0.02 }
+    FitClass { ink: 0.21, height: 0.63, tolerance: 0.02 }
 }
 fn d_high() -> FitClass {
     FitClass { ink: 0.30, height: 0.75, tolerance: 0.03 }
@@ -121,7 +124,7 @@ fn d_wild() -> FitClass {
     FitClass { ink: 0.34, height: 0.80, tolerance: 0.03 }
 }
 fn d_scatter() -> FitClass {
-    FitClass { ink: 0.34, height: 0.80, tolerance: 0.03 }
+    FitClass { ink: 0.36, height: 0.82, tolerance: 0.03 }
 }
 fn d_area_weight() -> f64 {
     0.65
@@ -168,9 +171,9 @@ impl SymbolSizing {
     }
 }
 
-/// A tonal band: where an asset's median HSV value (median of max(r,g,b) over
-/// opaque pixels) must land. The tone pass corrects out-of-band assets to the
-/// NEAREST band edge with a solved gamma curve; in-band assets are untouched.
+/// A tonal band: where an asset's median perceptual luminance (Rec. 709, over opaque
+/// pixels) must land. The tone pass corrects out-of-band assets to the NEAREST band
+/// edge with a solved gamma curve; in-band assets are untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ToneBand {
@@ -208,11 +211,14 @@ fn d_tone_gamma_hi() -> f64 { 1.60 }
 
 impl Default for SymbolTone {
     fn default() -> Self {
+        // Bands are median *perceptual luminance* (see tone.rs). ~0.08-wide windows centred on 0.30
+        // (low) / 0.40 (high tier) — wider than the old 0.04 so in-budget art passes untouched
+        // instead of being needlessly gamma-nudged. Lows sit a tier darker than the pay symbols.
         Self {
-            high: ToneBand { min: 0.38, max: 0.42 },
-            low: ToneBand { min: 0.28, max: 0.32 },
-            wild: ToneBand { min: 0.38, max: 0.42 },
-            scatter: ToneBand { min: 0.38, max: 0.42 },
+            high: ToneBand { min: 0.36, max: 0.44 },
+            low: ToneBand { min: 0.26, max: 0.34 },
+            wild: ToneBand { min: 0.36, max: 0.44 },
+            scatter: ToneBand { min: 0.36, max: 0.44 },
             alpha_floor: d_tone_alpha_floor(),
             ceiling: d_tone_ceiling(),
             gamma_lo: d_tone_gamma_lo(),
@@ -754,5 +760,44 @@ impl GameConfig {
     #[allow(dead_code)]
     pub fn symbols_by_role(&self, role: SymbolRole) -> impl Iterator<Item = &SymbolDef> {
         self.symbols.iter().filter(move |s| s.role == role)
+    }
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    /// The symbol-fit + tone defaults are a co-tuned system, not free parameters. This pins the
+    /// design intent so a stray edit is caught (there are otherwise no tests on these numbers, and
+    /// `$lib/symbolDefaults.ts` must mirror them).
+    #[test]
+    fn defaults_are_coherent() {
+        let s = SymbolSizing::default();
+
+        // The load-bearing invariant: a typical square-ish symbol hits BOTH its ink and height
+        // target with no blend residual when its bbox is ~53% filled — so `ink / height² ≈ 0.53`
+        // across every class (see processing/normalize.rs). Keep them co-scaled.
+        for c in [&s.low, &s.high, &s.wild, &s.scatter] {
+            let ratio = c.ink / (c.height * c.height);
+            assert!((0.50..=0.56).contains(&ratio), "ink/height² off band: {ratio}");
+        }
+
+        // The ladder: low < high < wild ≤ scatter, in both ink and height.
+        assert!(s.low.ink < s.high.ink && s.high.ink < s.wild.ink && s.wild.ink <= s.scatter.ink);
+        assert!(s.low.height < s.high.height && s.high.height < s.wild.height && s.wild.height <= s.scatter.height);
+
+        // Ink-leaning blend; hard safe box with a touch less height headroom.
+        assert_eq!(s.area_weight, 0.65);
+        assert!(s.safe_w > s.safe_h && s.safe_h >= 0.85);
+
+        // Tone bands (median perceptual luminance): pay tier a clear step brighter than lows,
+        // ~0.08-wide windows, all in the dark-matte budget (< 0.5).
+        let t = SymbolTone::default();
+        assert!(t.low.max <= t.high.min, "low tier must be darker than the pay tier");
+        for b in [&t.low, &t.high, &t.wild, &t.scatter] {
+            let w = b.max - b.min;
+            assert!((0.06..=0.10).contains(&w), "tone band width off: {w}");
+            assert!(b.max < 0.5, "symbols stay in the dark-matte budget");
+        }
     }
 }

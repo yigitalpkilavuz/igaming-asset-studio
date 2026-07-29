@@ -1707,9 +1707,9 @@ export type TimelineTarget =
 ({ slotAttachment: string }) & { boneRotate?: never; boneScale?: never; boneTranslate?: never; slotAlpha?: never; slotColor?: never; slotDeform?: never };
 
 /**
- *  A tonal band: where an asset's median HSV value (median of max(r,g,b) over
- *  opaque pixels) must land. The tone pass corrects out-of-band assets to the
- *  NEAREST band edge with a solved gamma curve; in-band assets are untouched.
+ *  A tonal band: where an asset's median perceptual luminance (Rec. 709, over opaque
+ *  pixels) must land. The tone pass corrects out-of-band assets to the NEAREST band
+ *  edge with a solved gamma curve; in-band assets are untouched.
  */
 export type ToneBand = {
 	min: number | null,

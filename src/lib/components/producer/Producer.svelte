@@ -16,8 +16,7 @@
   import { jobsState, runJob, pushRecord } from "$lib/stores/jobs.svelte";
   import { assetStatus } from "$lib/assetStatus";
   import { open } from "@tauri-apps/plugin-dialog";
-  import ConfigForm from "../ConfigForm.svelte";
-  import BlueprintPorter from "../BlueprintPorter.svelte";
+  import BlueprintModal from "./BlueprintModal.svelte";
   import ExportModal from "../ExportModal.svelte";
   import Ledger from "./Ledger.svelte";
   import Bench from "./Bench.svelte";
@@ -41,16 +40,6 @@
   let records = $state<Record<string, AssetRecord>>({});
 
   let blueprintOpen = $state(false);
-  /** Blueprint modal tab — Identity first for a new game, Symbols for editing. */
-  type BpTab = "identity" | "mechanics" | "symbols" | "scenes" | "assistant";
-  const BP_TABS: { key: BpTab; label: string }[] = [
-    { key: "identity", label: "Identity" },
-    { key: "mechanics", label: "Mechanics" },
-    { key: "symbols", label: "Symbols" },
-    { key: "scenes", label: "Scenes" },
-    { key: "assistant", label: "AI & Porter" },
-  ];
-  let bpTab = $state<BpTab>("identity");
   let exportOpen = $state(false);
   let anchorOpen = $state(false);
   /** Bumped when the style anchor changes so the bench chip refreshes. */
@@ -609,45 +598,15 @@
   {/if}
 
   {#if blueprintOpen}
-    <div
-      class="overlay"
-      role="presentation"
-      onclick={(e) => e.target === e.currentTarget && savedId && (blueprintOpen = false)}
-    >
-      <div class="sheet rise" role="dialog" aria-modal="true" aria-label="Blueprint">
-        <div class="sheet-head">
-          <div>
-            <span class="u-label">Blueprint</span>
-            <h2 class="display sheet-title">{config.name || "New game"}</h2>
-          </div>
-          <span class="derived mono">{assets.length} assets derived</span>
-        </div>
-        <nav class="bp-tabs" aria-label="Blueprint section">
-          {#each BP_TABS as t (t.key)}
-            <button class="bp-tab" class:on={bpTab === t.key} onclick={() => (bpTab = t.key)}>
-              {t.label}
-            </button>
-          {/each}
-        </nav>
-        <div class="sheet-body">
-          {#if bpTab === "assistant"}
-            <BlueprintPorter bind:config />
-          {:else}
-            <ConfigForm bind:config idLocked={savedId !== null} section={bpTab} />
-          {/if}
-        </div>
-        <div class="sheet-foot">
-          {#if savedId}
-            <button class="ghost" onclick={() => (blueprintOpen = false)}>Close</button>
-          {:else}
-            <button class="ghost" onclick={goProjects}>Cancel</button>
-          {/if}
-          <button class="gold" onclick={saveBlueprint} disabled={saving || !config.gameId}>
-            {saving ? "Saving…" : savedId ? "Save blueprint" : "Create game"}
-          </button>
-        </div>
-      </div>
-    </div>
+    <BlueprintModal
+      bind:config
+      {savedId}
+      {saving}
+      assetsCount={assets.length}
+      onsave={saveBlueprint}
+      oncancel={goProjects}
+      onclose={() => (blueprintOpen = false)}
+    />
   {/if}
 
   {#if exportOpen && savedId}
@@ -941,77 +900,4 @@
     min-height: 40vh;
   }
 
-  /* ── Blueprint overlay ── */
-  .overlay {
-    position: fixed;
-    inset: 0;
-    background: var(--scrim);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 50;
-  }
-  .sheet {
-    width: min(920px, 94vw);
-    height: min(82vh, 860px);
-    display: flex;
-    flex-direction: column;
-    background: var(--ink-2);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--elev-3);
-  }
-  .sheet-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    padding: var(--space-6) var(--space-6) var(--space-3);
-  }
-  .sheet-title {
-    font-size: 1.2rem;
-    margin: var(--space-1) 0 0;
-  }
-  .derived {
-    font-size: var(--text-xs);
-    color: var(--ash);
-  }
-  .bp-tabs {
-    display: flex;
-    gap: var(--space-6);
-    padding: 0 var(--space-6);
-    border-bottom: 1px solid var(--line);
-  }
-  .bp-tab {
-    border: none;
-    border-bottom: 2px solid transparent;
-    border-radius: 0;
-    background: transparent;
-    padding: var(--space-3) var(--space-1) var(--space-4);
-    color: var(--ash);
-    font-size: var(--text-md);
-    transition: color var(--dur-fast) var(--ease);
-  }
-  .bp-tab:hover {
-    color: var(--bone-dim);
-    background: transparent;
-  }
-  .bp-tab.on {
-    color: var(--bone);
-    border-bottom-color: var(--gold);
-  }
-  .sheet-body {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    padding: var(--space-6);
-    display: flex;
-    flex-direction: column;
-  }
-  .sheet-foot {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-3);
-    padding: var(--space-4) var(--space-6);
-    border-top: 1px solid var(--line);
-  }
 </style>

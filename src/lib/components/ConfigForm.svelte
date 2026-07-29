@@ -2,6 +2,7 @@
   import type { GameConfig, SymbolRole, WinType } from "$lib/ipc";
   import { DEFAULT_AUDIO_CUES } from "$lib/audioCues";
   import { DEFAULT_FONTS } from "$lib/fonts";
+  import { DEFAULT_SYMBOL_SIZING, DEFAULT_SYMBOL_TONE } from "$lib/symbolDefaults";
 
   let {
     config = $bindable(),
@@ -17,31 +18,11 @@
   const winTypes: WinType[] = ["lines", "ways", "scatter", "cluster"];
   const roles: SymbolRole[] = ["high", "low", "wild", "expandingWild", "scatter", "bonus", "special"];
 
-  // Symbol fit rule — backfill the block for configs that predate it.
-  config.symbolSizing ??= {
-    low: { ink: 0.19, height: 0.6, tolerance: 0.02 },
-    high: { ink: 0.3, height: 0.75, tolerance: 0.03 },
-    wild: { ink: 0.34, height: 0.8, tolerance: 0.03 },
-    scatter: { ink: 0.34, height: 0.8, tolerance: 0.03 },
-    areaWeight: 0.65,
-    centroidBias: 0.7,
-    alphaFloor: 26,
-    safeW: 0.92,
-    safeH: 0.88,
-    canvas: 0,
-  };
+  // Symbol fit + tone — backfill for configs that predate these blocks (new games get them from
+  // the backend's serde defaults). Single source: $lib/symbolDefaults (mirrors game_config.rs).
+  config.symbolSizing ??= structuredClone(DEFAULT_SYMBOL_SIZING);
   const sizing = config.symbolSizing;
-  // Symbol tonal bands — backfill for configs that predate the tone pass.
-  config.symbolTone ??= {
-    high: { min: 0.38, max: 0.42 },
-    low: { min: 0.28, max: 0.32 },
-    wild: { min: 0.38, max: 0.42 },
-    scatter: { min: 0.38, max: 0.42 },
-    alphaFloor: 200,
-    ceiling: 0.92,
-    gammaLo: 0.55,
-    gammaHi: 1.6,
-  };
+  config.symbolTone ??= structuredClone(DEFAULT_SYMBOL_TONE);
   const tone = config.symbolTone;
 
   // Scene-asset system — backfill for configs that predate it.
@@ -129,59 +110,58 @@
 
 <div class="form">
 {#if section === "all" || section === "identity"}
-  <div class="field-row">
-    <label class="field">
-      <span>Game id</span>
-      <input
-        bind:value={config.gameId}
-        placeholder="babewyn_court"
-        disabled={idLocked}
-        spellcheck="false"
-      />
+  <!-- Naming -->
+  <div class="name-block">
+    <label class="big-field">
+      <span class="fl">Name</span>
+      <input class="name-input" bind:value={config.name} placeholder="Babewyn Court" />
     </label>
-    <label class="field">
-      <span>Name</span>
-      <input bind:value={config.name} placeholder="Babewyn Court" />
+    <label class="id-field">
+      <span class="fl">Game id</span>
+      <input class="mono" bind:value={config.gameId} placeholder="babewyn_court" disabled={idLocked} spellcheck="false" />
     </label>
   </div>
 
+  <!-- Shape: win type + grid -->
+  <div class="shape">
+    <div class="shape-part">
+      <span class="fl">Win type</span>
+      <div class="seg">
+        {#each winTypes as w (w)}
+          <button type="button" class:on={config.winType === w} onclick={() => (config.winType = w)}>{w}</button>
+        {/each}
+      </div>
+    </div>
+    <div class="shape-part">
+      <span class="fl">Grid</span>
+      <div class="grid-ctl">
+        <input type="number" min="1" max="10" bind:value={config.cols} aria-label="columns" />
+        <span class="times">×</span>
+        <input type="number" min="1" max="10" bind:value={config.rows} aria-label="rows" />
+        <span class="grid-note">columns × rows</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Style master — the key creative field: kept first + roomy, no ornament. -->
   <label class="field">
     <span>Style master <em class="hint">— prepended to every asset prompt (your anti-slop lever)</em></span>
     <textarea
       bind:value={config.stylePrompt}
-      rows="4"
+      rows="5"
       placeholder="illuminated medieval manuscript marginalia; iron-gall ink outlines with visible hand-drawn line weight; aged parchment; muted oxblood/lapis/forest-green with restrained gold-leaf; flat matte painterly; slightly wonky, hand-inked — NOT hyperrealistic, NOT 3D, NOT digital-clean"
     ></textarea>
   </label>
 
-  <label class="field">
-    <span>Negative master <em class="hint">— extra negatives; the studio anti-slop floor always applies, leave empty to just use it</em></span>
-    <textarea bind:value={config.negativePrompt} rows="2" placeholder="e.g. cute, chibi, saturated, modern clothing…"></textarea>
-  </label>
-
-  <label class="field">
-    <span>Brief <em class="hint">— documentation only</em></span>
-    <textarea
-      bind:value={config.brief}
-      rows="2"
-      placeholder="One-line theme note for your own reference…"
-    ></textarea>
-  </label>
-
+  <!-- Secondary -->
   <div class="field-row">
     <label class="field">
-      <span>Win type</span>
-      <select bind:value={config.winType}>
-        {#each winTypes as w (w)}<option value={w}>{w}</option>{/each}
-      </select>
+      <span>Negative master <em class="hint">— extra negatives (the studio floor always applies)</em></span>
+      <textarea bind:value={config.negativePrompt} rows="2" placeholder="e.g. cute, chibi, saturated, modern clothing…"></textarea>
     </label>
-    <label class="field narrow">
-      <span>Columns</span>
-      <input type="number" min="1" max="10" bind:value={config.cols} />
-    </label>
-    <label class="field narrow">
-      <span>Rows</span>
-      <input type="number" min="1" max="10" bind:value={config.rows} />
+    <label class="field">
+      <span>Brief <em class="hint">— a note for yourself</em></span>
+      <textarea bind:value={config.brief} rows="2" placeholder="One-line theme note…"></textarea>
     </label>
   </div>
 {/if}
@@ -189,15 +169,25 @@
 {#if section === "all" || section === "mechanics"}
   <fieldset class="mechanics">
     <legend>Mechanics</legend>
-    <label class="check"><input type="checkbox" bind:checked={config.hasFeatureBackground} /> Feature background</label>
-    <label class="check"><input type="checkbox" bind:checked={config.hasBuyBonus} /> Buy bonus</label>
-    <label class="check"><input type="checkbox" bind:checked={config.hasMystery} /> Mystery symbols</label>
-    <label class="check"><input type="checkbox" bind:checked={config.holdAndSpin} /> Hold &amp; spin</label>
-    <label class="check"><input type="checkbox" bind:checked={config.hasMeter} /> Collection meter</label>
-    <label class="check"><input type="checkbox" bind:checked={config.hasMascot} /> Mascot character</label>
-    <label class="check"><input type="checkbox" bind:checked={config.hasAudio} onchange={ensureAudioCues} /> Audio (music + SFX)</label>
-    <label class="check"><input type="checkbox" bind:checked={config.hasLoader} /> Loader art (progress bar + intro panel)</label>
-    <label class="check"><input type="checkbox" bind:checked={config.hasFonts} onchange={ensureFonts} /> Bitmap fonts</label>
+    <div class="tgroup">
+      <span class="tg-label">Features</span>
+      <div class="toggles">
+        <label class="check"><input type="checkbox" bind:checked={config.hasFeatureBackground} /> Feature background</label>
+        <label class="check"><input type="checkbox" bind:checked={config.hasBuyBonus} /> Buy bonus</label>
+        <label class="check"><input type="checkbox" bind:checked={config.hasMystery} /> Mystery symbols</label>
+        <label class="check"><input type="checkbox" bind:checked={config.holdAndSpin} /> Hold &amp; spin</label>
+        <label class="check"><input type="checkbox" bind:checked={config.hasMeter} /> Collection meter</label>
+      </div>
+    </div>
+    <div class="tgroup">
+      <span class="tg-label">Cast &amp; polish</span>
+      <div class="toggles">
+        <label class="check"><input type="checkbox" bind:checked={config.hasMascot} /> Mascot character</label>
+        <label class="check"><input type="checkbox" bind:checked={config.hasAudio} onchange={ensureAudioCues} /> Audio (music + SFX)</label>
+        <label class="check"><input type="checkbox" bind:checked={config.hasLoader} /> Loader art</label>
+        <label class="check"><input type="checkbox" bind:checked={config.hasFonts} onchange={ensureFonts} /> Bitmap fonts</label>
+      </div>
+    </div>
   </fieldset>
 
   {#if config.hasMascot}
@@ -266,8 +256,8 @@
         <span class="fit-name">{e.name}</span>
         <input type="number" min="5" max="80" value={pct(e.cls?.ink, 30)} oninput={(ev) => e.cls && (e.cls.ink = +ev.currentTarget.value / 100)} />
         <input type="number" min="20" max="100" value={pct(e.cls?.height, 75)} oninput={(ev) => e.cls && (e.cls.height = +ev.currentTarget.value / 100)} />
-        <input type="number" min="5" max="95" value={pct(e.tone?.min, 30)} oninput={(ev) => e.tone && (e.tone.min = +ev.currentTarget.value / 100)} title="tonal band floor — median HSV value %" />
-        <input type="number" min="5" max="95" value={pct(e.tone?.max, 40)} oninput={(ev) => e.tone && (e.tone.max = +ev.currentTarget.value / 100)} title="tonal band ceiling — median HSV value %" />
+        <input type="number" min="5" max="95" value={pct(e.tone?.min, 30)} oninput={(ev) => e.tone && (e.tone.min = +ev.currentTarget.value / 100)} title="tonal band floor — median perceptual luminance %" />
+        <input type="number" min="5" max="95" value={pct(e.tone?.max, 40)} oninput={(ev) => e.tone && (e.tone.max = +ev.currentTarget.value / 100)} title="tonal band ceiling — median perceptual luminance %" />
       {/each}
     </div>
     <div class="field-row">
@@ -464,6 +454,92 @@
     font-weight: 400;
     color: var(--ash-deep);
   }
+
+  /* ── Identity: a composed first screen, not a flat stack ── */
+  .fl {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--ash);
+  }
+  .name-block {
+    display: grid;
+    grid-template-columns: 1fr 15rem;
+    gap: 0.75rem;
+    align-items: end;
+  }
+  .big-field,
+  .id-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .name-input {
+    font-size: 1.15rem;
+    font-weight: 600;
+    padding: 0.5rem 0.7rem;
+  }
+
+  /* Shape control: segmented win type + grid steppers */
+  .shape {
+    display: flex;
+    gap: 2rem;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .shape-part {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--line-2);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    width: fit-content;
+  }
+  .seg button {
+    border: none;
+    border-radius: 0;
+    border-right: 1px solid var(--line);
+    background: transparent;
+    color: var(--ash);
+    font-size: 0.8rem;
+    padding: 0.38rem 0.95rem;
+    text-transform: capitalize;
+  }
+  .seg button:last-child {
+    border-right: none;
+  }
+  .seg button:hover:not(.on) {
+    color: var(--bone-dim);
+    background: var(--wash);
+  }
+  .seg button.on {
+    background: var(--wash);
+    color: var(--bone);
+  }
+  .grid-ctl {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .grid-ctl input {
+    width: 3.4rem;
+    text-align: center;
+  }
+  .times {
+    color: var(--ash);
+  }
+  .grid-note {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    color: var(--ash-deep);
+    margin-left: 0.35rem;
+  }
+
   fieldset.mechanics {
     border: 1px solid var(--line);
     border-radius: var(--radius);
@@ -491,6 +567,25 @@
   .check input {
     width: auto;
     accent-color: var(--gold);
+  }
+  /* Grouped mechanics toggles — clusters, each a labelled grid (declutters the flat wall). */
+  .tgroup {
+    flex: 1 1 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .tg-label {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 700;
+    color: var(--gold-deep);
+  }
+  .toggles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 0.5rem 1.25rem;
   }
   .symbols-head {
     display: flex;

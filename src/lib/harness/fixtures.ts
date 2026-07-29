@@ -211,6 +211,9 @@ export const fontsConfig = {
     { key: "font_white", name: "White numerals", typeface: "titan_one", sizePx: 96, fillTop: "#ffffff", fillBottom: "#e6ecf5", outlineColor: "#1a2230", outlinePx: 6 },
   ],
 };
+// ── BlueprintModal fixture ────────────────────────────────────────────────────────────────────
+// A deep clone so ConfigForm's on-mount `??=` backfills don't mutate the shared lightningConfig.
+export const blueprintConfig = JSON.parse(JSON.stringify({ ...lightningConfig, name: "Babewyn Court" }));
 const audioRecord = {
   key: "bgm_main",
   prompt: { subject: "bgm_main", overridePrompt: "" },
@@ -315,6 +318,10 @@ export function mockInvoke(fixtureName: string, cmd: string, args: Record<string
     case "get_variation_stage_image":
     case "get_variation_image":
       return fx.imageFor(String(args.assetKey ?? ""));
+    case "config_draft_prompt":
+      return "You are designing a slot game. Return ONE JSON object…\n{ \"name\": \"…\", \"symbols\": [ … ], \"stylePrompt\": \"…\" }";
+    case "apply_config_json":
+      return (FIXTURES[fixtureName]?.project as { config: unknown } | undefined)?.config ?? null;
     case "list_audio_providers":
       return AUDIO_PROVIDERS;
     case "list_font_typefaces":

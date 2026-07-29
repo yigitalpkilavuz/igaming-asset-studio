@@ -4,8 +4,9 @@
    * driven headlessly (see tests/visual/*.spec.ts, Playwright WebKit). Never shipped to users;
    * client-only (+page.ts sets ssr=false). URL: /harness?c=GamePreview&fixture=lightning
    */
-  import { installMock, audioAsset, audioConfig } from "$lib/harness/fixtures";
+  import { installMock, audioAsset, audioConfig, blueprintConfig } from "$lib/harness/fixtures";
   import type { AssetDescriptor, GameConfig } from "$lib/ipc";
+  import BlueprintModal from "$lib/components/producer/BlueprintModal.svelte";
   import GamePreview from "$lib/components/preview/GamePreview.svelte";
   import AudioBench from "$lib/components/producer/AudioBench.svelte";
   import SoundStudio from "$lib/components/sound/SoundStudio.svelte";
@@ -36,6 +37,15 @@
     <FontStudio gameId="mock" />
   {:else if component === "SettingsModal"}
     <SettingsModal />
+  {:else if component === "BlueprintModal"}
+    <BlueprintModal
+      config={blueprintConfig as unknown as GameConfig}
+      savedId={null}
+      assetsCount={33}
+      onsave={() => {}}
+      oncancel={() => {}}
+      onclose={() => {}}
+    />
   {:else}
     <p class="unknown">Unknown component: <code>{component}</code></p>
   {/if}

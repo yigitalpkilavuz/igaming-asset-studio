@@ -13,6 +13,8 @@ export type {
   AudioReport,
   FontDef,
   FontTypeface,
+  SymbolSizing,
+  SymbolTone,
   BuyBonusMode,
   Project,
   ProjectSummary,

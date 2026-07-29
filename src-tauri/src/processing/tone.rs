@@ -30,13 +30,17 @@ pub struct ToneSpec {
     pub gamma_hi: f64,
 }
 
-/// Median HSV value (max of r,g,b) over pixels with alpha > floor. None when nothing
-/// qualifies.
+/// Median perceptual luminance (Rec. 709: 0.2126 R + 0.7152 G + 0.0722 B) over pixels with
+/// alpha > floor. None when nothing qualifies. Luminance tracks a symbol's *visual weight* far
+/// better than HSV value (max channel), which over-reads saturated colour as "bright" — a
+/// saturated gold reads value 1.0 but is a rich mid-tone. Grayscale art is unaffected (luma = value
+/// when R=G=B), so the tone bands keep their meaning for neutral art while no longer darkening
+/// colour just for being saturated.
 pub fn median_value(img: &image::RgbaImage, alpha_floor: u8) -> Option<f64> {
     let mut vals: Vec<u8> = img
         .pixels()
         .filter(|p| p.0[3] > alpha_floor)
-        .map(|p| p.0[0].max(p.0[1]).max(p.0[2]))
+        .map(|p| (0.2126 * p.0[0] as f64 + 0.7152 * p.0[1] as f64 + 0.0722 * p.0[2] as f64).round() as u8)
         .collect();
     if vals.is_empty() {
         return None;
