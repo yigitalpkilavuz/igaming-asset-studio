@@ -661,6 +661,60 @@ the game typesets the localized word onto it at runtime.",
         "Splash hero art, portrait.",
     ));
 
+    // ── Boot loader (two-step loading screen) ─────────────────────────────────
+    // The web-sdk owns the flow (LoadingScreen → PressToContinue); we supply the art those
+    // screens reference. `game_logo` + `splash_hero_*` above are reused for the title + backdrop.
+    if config.has_loader {
+        out.push(Rule::make(
+            "progress_bar_bg",
+            AssetKind::Panel,
+            "loader",
+            "§10",
+            Production::Raster,
+            Some((1024, 128)),
+            nine_slice_formats(),
+            Some(Insets::uniform(48)),
+            true,
+            "Loading progress bar — empty track (step 1).",
+        ));
+        out.push(Rule::make(
+            "progress_bar",
+            AssetKind::Panel,
+            "loader",
+            "§10",
+            Production::Raster,
+            Some((1024, 128)),
+            nine_slice_formats(),
+            Some(Insets::uniform(48)),
+            true,
+            "Loading progress bar — fill (step 1).",
+        ));
+        out.push(Rule::make(
+            "progress_bar_frame",
+            AssetKind::Panel,
+            "loader",
+            "§10",
+            Production::Raster,
+            Some((1024, 160)),
+            nine_slice_formats(),
+            Some(Insets::uniform(56)),
+            true,
+            "Loading progress bar — ornamental frame overlay (step 1).",
+        ));
+        out.push(Rule::make(
+            "intro_panel",
+            AssetKind::Panel,
+            "loader",
+            "§10",
+            Production::Raster,
+            Some((720, 900)),
+            nine_slice_formats(),
+            Some(Insets::uniform(96)),
+            true,
+            "Feature-preview panel chrome (step 2, click-to-continue).",
+        ));
+    }
+
     // Audio (music + SFX) — a fully config-driven cue list. `Production::Audio` keeps these
     // out of every image path; they branch off at the audio generate/process/export hooks.
     if config.has_audio {
@@ -682,6 +736,30 @@ the game typesets the localized word onto it at runtime.",
                 None,
                 true,
                 cue.description.clone(),
+            ));
+        }
+    }
+
+    // Bitmap fonts — config-driven, baked deterministically at export (BMFont `.xml` + `.webp`).
+    // `Production::Font` keeps these out of every image path (no AI, no per-variation processing).
+    if config.has_fonts {
+        for font in &config.fonts {
+            let desc = if font.name.is_empty() {
+                format!("Bitmap font {}", font.key)
+            } else {
+                format!("Bitmap font — {}", font.name)
+            };
+            out.push(Rule::make(
+                font.key.clone(),
+                AssetKind::Font,
+                "fonts",
+                "§17",
+                Production::Font,
+                None,
+                vec![Format::FontXml, Format::Webp],
+                None,
+                true,
+                desc,
             ));
         }
     }

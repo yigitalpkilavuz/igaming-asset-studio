@@ -4,6 +4,7 @@
 pub mod assistant;
 pub mod audio;
 pub mod export;
+pub mod fonts;
 pub mod generate;
 pub mod glyphs;
 pub mod layers;

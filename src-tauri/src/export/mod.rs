@@ -246,6 +246,16 @@ pub fn build_dist_gated(base: &Path, game_id: &str, force: bool) -> Result<Expor
             }
             continue;
         }
+        // Fonts bake deterministically from their FontDef (rasterize → BMFont .xml + .webp page).
+        if asset.production == Production::Font {
+            if let Some(def) = project.config.fonts.iter().find(|f| f.key == asset.key) {
+                manifest_entries.push(export_font(def, &dist_root)?);
+                written.push(asset.key.clone());
+            } else {
+                missing.push(asset.key.clone());
+            }
+            continue;
+        }
         if asset.production != Production::Raster {
             waived.push(asset.key.clone());
             continue;
@@ -659,6 +669,26 @@ pub fn publish_audio_sprite(base: &Path, game_id: &str, dest: &Path) -> Result<V
     Ok(keys)
 }
 
+// ── Font export: deterministic BMFont bake (dist/fonts/<key>/<key>.{xml,webp}) ──────────────────
+
+/// Rasterize a `FontDef` and write its BMFont pair to `dist/fonts/<key>/`, returning the single
+/// `type: 'font'` manifest entry that registers it (pixi-svelte loads the `.xml`, which references
+/// the sibling `.webp` page).
+fn export_font(def: &crate::model::game_config::FontDef, dist_root: &Path) -> Result<String, String> {
+    let (xml, webp) = crate::processing::font::rasterize_font(def)?;
+    let dir = dist_root.join("fonts").join(&def.key);
+    fs::create_dir_all(&dir).map_err(|e| format!("create fonts/{}: {e}", def.key))?;
+    fs::write(dir.join(format!("{}.xml", def.key)), xml).map_err(|e| format!("write font xml: {e}"))?;
+    fs::write(dir.join(format!("{}.webp", def.key)), webp).map_err(|e| format!("write font page: {e}"))?;
+    Ok(font_asset_entry(&def.key))
+}
+
+fn font_asset_entry(key: &str) -> String {
+    format!(
+        "  {key}: {{ type: 'font', src: new URL('../../assets/fonts/{key}/{key}.xml', import.meta.url).href }},"
+    )
+}
+
 /// Copy one asset's processed finals into dist. Returns the primary (webp) path relative
 /// to the assets root, or `None` if the asset isn't ready.
 
@@ -819,6 +849,23 @@ fn render_manifest(entries: &[String]) -> String {
 mod audio_sprite_tests {
     use super::*;
 
+    /// `export_font` rasterizes a FontDef into the BMFont pair the web-sdk loads.
+    #[test]
+    fn export_font_writes_bmfont_pair() {
+        let dir = std::env::temp_dir().join(format!("wf_fontexport_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let def = crate::model::game_config::default_fonts().remove(0); // font_white
+        let entry = export_font(&def, &dir).expect("export_font");
+        // Files land under fonts/<key>/, xml + webp page.
+        assert!(dir.join(format!("fonts/{k}/{k}.xml", k = def.key)).is_file(), "xml written");
+        assert!(dir.join(format!("fonts/{k}/{k}.webp", k = def.key)).is_file(), "webp page written");
+        // Manifest entry is a valid pixi-svelte `type: 'font'` line pointing at the .xml.
+        assert!(entry.contains(&format!("{}: {{ type: 'font'", def.key)));
+        assert!(entry.contains(&format!("assets/fonts/{k}/{k}.xml", k = def.key)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// `finalize_sounds_json` reshapes howler2 output into Stake's {sprite, src, config} — no
     /// external tools needed (fakes the audiosprite JSON + touches the format files).
     #[test]
@@ -946,6 +993,9 @@ mod tests {
             scene: Default::default(),
             has_audio: false,
             audio: Default::default(),
+            has_loader: true,
+            has_fonts: false,
+            fonts: Vec::new(),
         }
     }
 
@@ -1008,6 +1058,32 @@ mod tests {
 
         // Backgrounds etc. are required but unprocessed → reported missing.
         assert!(report.missing.contains(&"bg_base_landscape".to_string()));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn build_dist_bakes_fonts_deterministically() {
+        let base = std::env::temp_dir().join(format!("wf_export_fonts_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let game_id = "expgame";
+        let mut cfg = config();
+        cfg.has_fonts = true;
+        cfg.fonts = crate::model::game_config::default_fonts();
+        storage::write_project(&base, &Project::new(cfg, 0.0)).unwrap();
+
+        let report = build_dist(&base, game_id).unwrap();
+
+        // Each font baked its BMFont pair from config alone (no records needed).
+        for key in ["font_gold", "font_white"] {
+            assert!(report.written.contains(&key.to_string()), "{key} written");
+            let dir = Path::new(&report.dist_path).join(format!("fonts/{key}"));
+            assert!(dir.join(format!("{key}.xml")).is_file(), "{key}.xml");
+            assert!(dir.join(format!("{key}.webp")).is_file(), "{key}.webp");
+        }
+        // Manifest registers them as pixi-svelte `type: 'font'`.
+        assert!(report.manifest_snippet.contains("font_gold: { type: 'font'"));
+        assert!(report.manifest_snippet.contains("../../assets/fonts/font_gold/font_gold.xml"));
 
         let _ = fs::remove_dir_all(&base);
     }
@@ -1193,6 +1269,9 @@ mod scene_manifest_tests {
             scene: Default::default(),
             has_audio: false,
             audio: Default::default(),
+            has_loader: true,
+            has_fonts: false,
+            fonts: Vec::new(),
         };
         // No placements → no manifest at all.
         assert!(emit_scene_manifest(&cfg).is_none());

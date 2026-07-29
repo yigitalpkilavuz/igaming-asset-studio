@@ -214,6 +214,9 @@ mod tests {
             scene: Default::default(),
             has_audio: false,
             audio: Default::default(),
+            has_loader: true,
+            has_fonts: false,
+            fonts: Vec::new(),
         }
     }
 

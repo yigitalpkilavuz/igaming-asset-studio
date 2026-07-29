@@ -5,6 +5,7 @@
 //! detected on the system, and are skipped gracefully otherwise.
 
 pub mod audio;
+pub mod font;
 pub mod chromakey;
 pub mod convert;
 pub mod normalize;

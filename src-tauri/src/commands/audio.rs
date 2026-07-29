@@ -294,6 +294,9 @@ mod tests {
             scene: Default::default(),
             has_audio: true,
             audio: Default::default(),
+            has_loader: true,
+            has_fonts: false,
+            fonts: Vec::new(),
         };
         cfg.audio.style_prompt = "dark baroque orchestral".into();
         cfg.audio.cues = default_audio_cues();

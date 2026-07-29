@@ -9,6 +9,7 @@
   import GamePreview from "$lib/components/preview/GamePreview.svelte";
   import AudioBench from "$lib/components/producer/AudioBench.svelte";
   import SoundStudio from "$lib/components/sound/SoundStudio.svelte";
+  import FontStudio from "$lib/components/fonts/FontStudio.svelte";
   import SettingsModal from "$lib/components/SettingsModal.svelte";
 
   const params = new URLSearchParams(window.location.search);
@@ -31,6 +32,8 @@
     />
   {:else if component === "SoundStudio"}
     <SoundStudio gameId="mock" />
+  {:else if component === "FontStudio"}
+    <FontStudio gameId="mock" />
   {:else if component === "SettingsModal"}
     <SettingsModal />
   {:else}

@@ -7,7 +7,7 @@ import type { GameConfig } from "$lib/ipc";
  *  - `preview`: the Game preview — the real assets composed into a slot screen.
  *  The open game is STICKY: visiting the Library keeps it loaded in the other sections
  *  until another game is opened. */
-export type Section = "library" | "produce" | "animate" | "sound" | "preview";
+export type Section = "library" | "produce" | "animate" | "sound" | "fonts" | "preview";
 
 export const appState = $state<{
   section: Section;
@@ -116,6 +116,13 @@ export function goSound(gameId: string) {
   appState.gameId = gameId;
   appState.newGame = false;
   appState.section = "sound";
+}
+
+/** Open the Fonts studio — edit/preview the game's bitmap fonts. */
+export function goFonts(gameId: string) {
+  appState.gameId = gameId;
+  appState.newGame = false;
+  appState.section = "fonts";
 }
 
 /** Open the Game preview for a game (the real assets composed into a slot screen). */

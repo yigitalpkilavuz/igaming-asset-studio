@@ -24,6 +24,8 @@ pub enum AssetKind {
     Music,
     /// A short sound effect (spin, reel stop, win tick, UI click…).
     Sfx,
+    /// A bitmap font (BMFont `.xml` + `.webp` page atlas) for runtime `BitmapText`.
+    Font,
 }
 
 /// How an asset is produced. Only `Raster` assets flow through the generation loop;
@@ -44,6 +46,10 @@ pub enum Production {
     /// Deliberately NOT `Raster` so it bypasses every image path (generate/process/export/
     /// tone-gate/UI); the audio stages branch off at the four dedicated hook points.
     Audio,
+    /// A bitmap font, baked deterministically from a `FontDef` at export (rasterize a bundled
+    /// typeface → BMFont `.xml` + `.webp` page). Like `Audio`, NOT `Raster` — no AI/provider,
+    /// no per-variation processing; the export loop branches to `bake_fonts`.
+    Font,
 }
 
 /// Output file formats an asset must ship in.
@@ -63,6 +69,8 @@ pub enum Format {
     Mp3,
     /// AC-3 audiosprite twin (Safari).
     Ac3,
+    /// BMFont descriptor `.xml` (accompanies the `.webp` glyph page).
+    FontXml,
 }
 
 /// 9-slice border insets in author px on the source raster (ASSETS.md §4).

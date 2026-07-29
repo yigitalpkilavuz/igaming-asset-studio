@@ -66,6 +66,9 @@ fn babewyn_config() -> GameConfig {
             scene: Default::default(),
             has_audio: false,
             audio: Default::default(),
+            has_loader: true,
+            has_fonts: false,
+            fonts: Vec::new(),
     }
 }
 
@@ -110,6 +113,9 @@ fn lines_config() -> GameConfig {
             scene: Default::default(),
             has_audio: false,
             audio: Default::default(),
+            has_loader: true,
+            has_fonts: false,
+            fonts: Vec::new(),
     }
 }
 
@@ -137,8 +143,8 @@ fn babewyn_derivation() {
 
     // 12 symbols + 3 label banners (wild, scatter, INK_DROP special) + 4 backgrounds
     // + 3 reel_chrome + 2 symbol_chrome + 6 panels + 0 payline (scatter)
-    // + 3 branding/splash = 33.
-    assert_eq!(assets.len(), 33, "unexpected asset count");
+    // + 3 branding/splash + 4 loader (progress bar ×3 + intro panel) = 37.
+    assert_eq!(assets.len(), 37, "unexpected asset count");
     // Localization: labeled specials derive an EMPTY banner asset; the word itself
     // never bakes into artwork.
     let banner = find(&assets, "symbol_wild_banner").expect("symbol_wild_banner");
@@ -178,8 +184,9 @@ fn lines_derivation() {
     let assets = derive_assets(&lines_config());
 
     // 12 symbols + 2 label banners (wild, scatter) + 4 backgrounds + 3 reel_chrome
-    // + 2 symbol_chrome + 5 panels + 2 payline (lines) + 3 branding/splash = 33.
-    assert_eq!(assets.len(), 33, "unexpected asset count");
+    // + 2 symbol_chrome + 5 panels + 2 payline (lines) + 3 branding/splash
+    // + 4 loader (progress bar ×3 + intro panel) = 37.
+    assert_eq!(assets.len(), 37, "unexpected asset count");
 
     // 5×3 cell is 140 GU -> 280 author px symbols; wild/scatter ship square too.
     let h1 = find(&assets, "symbol_h1").expect("symbol_h1");
@@ -383,4 +390,44 @@ fn audio_cues_derive_only_when_enabled() {
     // Delivered as one Howler audiosprite (ogg/m4a/mp3/ac3) baked at export.
     use crate::model::asset::Format;
     assert_eq!(sfx.formats, vec![Format::Ogg, Format::M4a, Format::Mp3, Format::Ac3]);
+}
+
+#[test]
+fn loader_slots_derive_and_toggle() {
+    let mut cfg = lines_config();
+    // Loader is on by default → the progress bar + intro panel derive as raster 9-slice UI.
+    let assets = derive_assets(&cfg);
+    for key in ["progress_bar_bg", "progress_bar", "progress_bar_frame", "intro_panel"] {
+        let a = find(&assets, key).unwrap_or_else(|| panic!("{key} derived"));
+        assert_eq!(a.production, Production::Raster, "{key} is raster (flows through the Bench)");
+        assert_eq!(a.category, "loader");
+        assert!(a.nine_slice.is_some(), "{key} is 9-slice chrome");
+    }
+    // game_logo + splash are reused (already always-derived).
+    assert!(has(&assets, "game_logo"));
+    // Off → gone.
+    cfg.has_loader = false;
+    assert!(!has(&derive_assets(&cfg), "progress_bar"));
+}
+
+#[test]
+fn fonts_derive_only_when_enabled() {
+    use crate::model::asset::Format;
+    use crate::model::game_config::default_fonts;
+    let mut cfg = lines_config();
+
+    // Off by default → no font assets.
+    assert!(!has(&derive_assets(&cfg), "font_gold"));
+
+    // Enabled → one Production::Font descriptor per FontDef, formats = [FontXml, Webp], no dims.
+    cfg.has_fonts = true;
+    cfg.fonts = default_fonts();
+    let assets = derive_assets(&cfg);
+    let gold = find(&assets, "font_gold").expect("font_gold derived");
+    assert_eq!(gold.kind, AssetKind::Font);
+    assert_eq!(gold.production, Production::Font);
+    assert_eq!(gold.category, "fonts");
+    assert_eq!((gold.author_w, gold.author_h), (None, None));
+    assert_eq!(gold.formats, vec![Format::FontXml, Format::Webp]);
+    assert!(has(&assets, "font_white"));
 }

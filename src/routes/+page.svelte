@@ -6,6 +6,7 @@
   import AnimateSection from "$lib/components/animate/AnimateSection.svelte";
   import GamePreview from "$lib/components/preview/GamePreview.svelte";
   import SoundStudio from "$lib/components/sound/SoundStudio.svelte";
+  import FontStudio from "$lib/components/fonts/FontStudio.svelte";
   import JobToasts from "$lib/components/JobToasts.svelte";
 </script>
 
@@ -18,6 +19,10 @@
 {:else if appState.section === "sound" && appState.gameId}
   {#key appState.gameId}
     <SoundStudio gameId={appState.gameId} />
+  {/key}
+{:else if appState.section === "fonts" && appState.gameId}
+  {#key appState.gameId}
+    <FontStudio gameId={appState.gameId} />
   {/key}
 {:else if appState.section === "preview" && appState.gameId}
   {#key appState.gameId}

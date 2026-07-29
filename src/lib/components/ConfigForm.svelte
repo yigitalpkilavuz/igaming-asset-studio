@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { GameConfig, SymbolRole, WinType } from "$lib/ipc";
   import { DEFAULT_AUDIO_CUES } from "$lib/audioCues";
+  import { DEFAULT_FONTS } from "$lib/fonts";
 
   let {
     config = $bindable(),
@@ -63,6 +64,15 @@
     config.audio ??= { cues: [], defaultProvider: "", stylePrompt: "" };
     if (config.hasAudio && !(config.audio.cues?.length ?? 0)) {
       config.audio.cues = DEFAULT_AUDIO_CUES.map((c) => ({ ...c }));
+    }
+  }
+
+  // Bitmap fonts — backfill + seed the default font set the first time it's enabled.
+  config.fonts ??= [];
+  function ensureFonts() {
+    config.fonts ??= [];
+    if (config.hasFonts && !config.fonts.length) {
+      config.fonts = DEFAULT_FONTS.map((f) => ({ ...f }));
     }
   }
   scene.assets ??= [];
@@ -186,6 +196,8 @@
     <label class="check"><input type="checkbox" bind:checked={config.hasMeter} /> Collection meter</label>
     <label class="check"><input type="checkbox" bind:checked={config.hasMascot} /> Mascot character</label>
     <label class="check"><input type="checkbox" bind:checked={config.hasAudio} onchange={ensureAudioCues} /> Audio (music + SFX)</label>
+    <label class="check"><input type="checkbox" bind:checked={config.hasLoader} /> Loader art (progress bar + intro panel)</label>
+    <label class="check"><input type="checkbox" bind:checked={config.hasFonts} onchange={ensureFonts} /> Bitmap fonts</label>
   </fieldset>
 
   {#if config.hasMascot}

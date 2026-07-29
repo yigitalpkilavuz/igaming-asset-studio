@@ -11,6 +11,8 @@ export type {
   AudioKind,
   AudioProviderInfo,
   AudioReport,
+  FontDef,
+  FontTypeface,
   BuyBonusMode,
   Project,
   ProjectSummary,

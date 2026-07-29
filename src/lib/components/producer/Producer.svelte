@@ -141,8 +141,8 @@
       .deriveAssets(snap)
       .then((a) => {
         if (!cancelled) {
-          // Audio (music/sfx) is authored on the dedicated Sound section, not here.
-          assets = a.filter((x) => x.production !== "audio");
+          // Audio (Sound section) + fonts (Fonts section) are authored on their own pages.
+          assets = a.filter((x) => x.production !== "audio" && x.production !== "font");
           deriveError = "";
         }
       })

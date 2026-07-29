@@ -43,6 +43,8 @@
     payline: "Paylines",
     branding: "Branding",
     splash: "Splash",
+    loader: "Loader",
+    fonts: "Fonts",
   };
   const CATEGORY_ORDER = [
     "symbols",
@@ -55,6 +57,8 @@
     "payline",
     "branding",
     "splash",
+    "loader",
+    "fonts",
   ];
 
   const symbolRole = $derived.by(() => {

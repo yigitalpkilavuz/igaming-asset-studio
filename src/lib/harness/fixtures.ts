@@ -191,6 +191,23 @@ export const audioConfig = {
   hasAudio: true,
   audio: { cues: [audioCue], defaultProvider: "stable_audio", stylePrompt: "dark baroque orchestral" },
 };
+
+// ── FontStudio fixture ────────────────────────────────────────────────────────────────────────
+const FONT_TYPEFACES = [
+  { id: "luckiest_guy", name: "Luckiest Guy" },
+  { id: "titan_one", name: "Titan One" },
+];
+// A 1×1 transparent PNG so the preview <img> has a loadable src.
+const TINY_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+export const fontsConfig = {
+  ...lightningConfig,
+  hasFonts: true,
+  fonts: [
+    { key: "font_gold", name: "Gold win", typeface: "luckiest_guy", sizePx: 108, fillTop: "#ffe89a", fillBottom: "#e0a13a", outlineColor: "#4a2d0a", outlinePx: 7 },
+    { key: "font_white", name: "White numerals", typeface: "titan_one", sizePx: 96, fillTop: "#ffffff", fillBottom: "#e6ecf5", outlineColor: "#1a2230", outlinePx: 6 },
+  ],
+};
 const audioRecord = {
   key: "bgm_main",
   prompt: { subject: "bgm_main", overridePrompt: "" },
@@ -272,6 +289,12 @@ const FIXTURES: Record<string, Fixture> = {
     records: [audioRecord],
     imageFor,
   },
+  fonts: {
+    project: { schemaVersion: 1, config: fontsConfig, createdAt: 0, updatedAt: 0 },
+    descriptors: [],
+    records: [],
+    imageFor,
+  },
 };
 
 export const FIXTURE_NAMES = Object.keys(FIXTURES);
@@ -291,6 +314,10 @@ export function mockInvoke(fixtureName: string, cmd: string, args: Record<string
       return fx.imageFor(String(args.assetKey ?? ""));
     case "list_audio_providers":
       return AUDIO_PROVIDERS;
+    case "list_font_typefaces":
+      return FONT_TYPEFACES;
+    case "preview_font":
+      return TINY_PNG;
     case "get_variation_audio":
       return SILENT_WAV;
     case "generate_audio_variation":

@@ -67,6 +67,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::audio::stability_key_present,
         commands::audio::set_vertex_token,
         commands::audio::vertex_token_present,
+        commands::fonts::list_font_typefaces,
+        commands::fonts::preview_font,
         commands::generate::plan_symbol_set,
         commands::generate::generate_symbol_set_sheet,
         commands::generate::import_symbol_set_sheet,
