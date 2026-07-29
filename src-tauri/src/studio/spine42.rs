@@ -894,8 +894,10 @@ mod tests {
         assert_eq!(ph.len(), 1);
         assert_eq!(ph[0]["bone"], json!("body"));
         assert_eq!(ph[0]["rotate"], json!(1.0));
-        assert_eq!(ph[0]["strength"], json!(60.0));
-        assert_eq!(ph[0]["damping"], json!(0.85));
+        // Livelier defaults: softer spring, more inertia, slower settle (see doc.rs `sway`).
+        assert_eq!(ph[0]["strength"], json!(45.0));
+        assert_eq!(ph[0]["damping"], json!(0.72));
+        assert_eq!(ph[0]["inertia"], json!(0.65));
         assert_eq!(ph[0]["order"], json!(0));
     }
 

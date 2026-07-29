@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use super::doc::{
     Attachment, Clip, Curve, Key, MeshData, StudioDoc, Timeline, TimelineTarget, EASE_IN_OUT,
+    EASE_OUT,
 };
 
 /// The system prompt: the model returns a PLAN (primitive assignments), never keyframes.
@@ -96,6 +97,11 @@ fn ease() -> Curve {
 }
 fn ease_n(comps: usize) -> Curve {
     Curve::Bezier(EASE_IN_OUT.iter().cycle().take(comps * 4).copied().collect())
+}
+/// Ease-OUT (quick start, soft arrival) — the release of an anticipation / the grow of a reveal
+/// snaps out rather than easing symmetrically. `comps` value components (rotate=1, scale=2).
+fn ease_out_n(comps: usize) -> Curve {
+    Curve::Bezier(EASE_OUT.iter().cycle().take(comps * 4).copied().collect())
 }
 
 /// One eased, loop-closed oscillation about `base` with peak `amp`. The shape is a fundamental
@@ -234,9 +240,19 @@ pub fn render_move(doc: &StudioDoc, m: &MoveDraft, duration: f64) -> Option<Time
         }
         "breathe" | "throb" if is_bone => {
             let amp = m.amp.unwrap_or(0.03).clamp(0.005, 0.15);
+            // Non-uniform scale shears every child part (the mascot "body deformity"), so squash is
+            // only safe on a LEAF bone; a bone with children breathes UNIFORMLY. On a leaf, the
+            // inhale swells height while narrowing width (roughly volume-preserving) — an organic
+            // chest/body swell instead of a flat pulse.
+            let has_children = doc.bones.iter().any(|b| b.parent.as_deref() == Some(t));
             let keys = wave(1.0, amp, cycles, phase, duration)
                 .into_iter()
-                .map(|k| Key { time: k.time, v: vec![k.v[0], k.v[0]], curve: ease_n(2) }) // uniform scale
+                .map(|k| {
+                    let y = k.v[0];
+                    let d = y - 1.0; // signed breath deviation about rest
+                    let v = if has_children { vec![y, y] } else { vec![1.0 - 0.6 * d, y] };
+                    Key { time: k.time, v, curve: ease_n(2) }
+                })
                 .collect();
             (TimelineTarget::BoneScale(t.to_string()), keys)
         }
@@ -350,8 +366,8 @@ pub fn render_move(doc: &StudioDoc, m: &MoveDraft, duration: f64) -> Option<Time
             let tm = |f: f64| (a + f).clamp(0.0, 1.0) * duration;
             let keys = vec![
                 Key { time: 0.0, v: vec![0.0], curve: ease() },
-                Key { time: tm(0.0), v: vec![-amp], curve: ease() }, // wind back
-                Key { time: tm(0.15), v: vec![amp * 0.4], curve: ease() }, // release overshoot
+                Key { time: tm(0.0), v: vec![-amp], curve: ease_out_n(1) }, // snap the release out
+                Key { time: tm(0.15), v: vec![amp * 0.4], curve: ease() }, // overshoot → settle
                 Key { time: tm(0.35), v: vec![0.0], curve: Curve::Linear }, // settle
             ];
             (TimelineTarget::BoneRotate(t.to_string()), keys)
@@ -373,7 +389,7 @@ pub fn render_move(doc: &StudioDoc, m: &MoveDraft, duration: f64) -> Option<Time
         "reveal" | "appear" if is_bone => {
             let start = m.amp.unwrap_or(0.5).clamp(0.1, 0.95); // scale to grow FROM
             let keys = vec![
-                Key { time: 0.0, v: vec![start, start], curve: ease_n(2) },
+                Key { time: 0.0, v: vec![start, start], curve: ease_out_n(2) }, // snap up to the overshoot
                 Key { time: 0.65 * duration, v: vec![1.08, 1.08], curve: ease_n(2) }, // overshoot
                 Key { time: duration, v: vec![1.0, 1.0], curve: Curve::Linear },
             ];
@@ -456,7 +472,8 @@ pub fn render_plan(doc: &StudioDoc, id: &str, name: &str, plan: PlanDraft) -> Cl
         }
         let mut mv = m.clone();
         if is_bone && mv.phase.is_none() {
-            mv.phase = Some(chain_depth(doc, target) as f64 * 0.6);
+            // Deeper bones lag more → the motion visibly flows outward (follow-through/overlap).
+            mv.phase = Some(chain_depth(doc, target) as f64 * 0.85);
         }
         let Some(tl) = render_move(doc, &mv, duration) else { continue };
         if tl.keys.is_empty() || timelines.iter().any(|x| x.target == tl.target) {
@@ -544,6 +561,31 @@ mod tests {
         assert!(
             coin.keys.iter().any(|k| (k.v[0] - k.v[1]).abs() > 0.05),
             "leaf pop squashes & stretches"
+        );
+    }
+
+    #[test]
+    fn breathe_is_uniform_on_a_parent_but_squashes_a_leaf() {
+        use crate::studio::doc::Bone;
+        let mut d = doc(); // seed has root + body
+        d.bones.push(Bone::new("head", Some("body".into()), 300.0, 180.0)); // body now has a child
+        d.bones.push(Bone::new("coin", Some("root".into()), 100.0, 100.0)); // leaf: no children
+        let breathe = |target: &str| MoveDraft {
+            target: target.into(), kind: "breathe".into(), amp: Some(0.05),
+            cycles: Some(1.0), phase: None, color: None, to: None, at: None,
+        };
+        // A parent breathes uniformly (non-uniform scale would shear its child parts).
+        let body = render_move(&d, &breathe("body"), 2.0).unwrap();
+        for k in &body.keys {
+            assert!((k.v[0] - k.v[1]).abs() < 1e-9, "parent breathe stays uniform: {:?}", k.v);
+        }
+        // A leaf swells organically — width narrows as height rises (anti-correlated axes).
+        let coin = render_move(&d, &breathe("coin"), 2.0).unwrap();
+        assert!(
+            coin.keys.iter().any(|k| {
+                (k.v[1] - 1.0).abs() > 1e-6 && (k.v[0] - 1.0).signum() != (k.v[1] - 1.0).signum()
+            }),
+            "leaf breathe squashes & stretches (width vs height anti-correlated)"
         );
     }
 

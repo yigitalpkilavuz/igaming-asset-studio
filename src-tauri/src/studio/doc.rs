@@ -308,8 +308,15 @@ pub enum Curve {
     Bezier(Vec<f64>),
 }
 
-/// Standard ease-in-out handles for one component.
+/// Standard ease-in-out handles for one component (symmetric S).
 pub const EASE_IN_OUT: [f64; 4] = [0.42, 0.0, 0.58, 1.0];
+/// Decelerate into the key (ease-out): quick start, soft arrival.
+pub const EASE_OUT: [f64; 4] = [0.0, 0.0, 0.58, 1.0];
+/// Overshoot past the target then settle back — gives a beat its "snap" (easeOutBack). The cy > 1
+/// handle is fine: the emitter maps it to a Spine control point past the end value.
+pub const EASE_OUT_BACK: [f64; 4] = [0.34, 1.56, 0.64, 1.0];
+/// Wind slightly back before moving (anticipation, easeInBack). cy < 0 dips below the start value.
+pub const EASE_ANTICIPATE: [f64; 4] = [0.36, 0.0, 0.66, -0.56];
 
 /// A Spine 4.2 physics constraint on one bone. Defaults make a pleasant rotational sway
 /// for chain segments (crests, capes, pendants); the runtime computes the motion from how
@@ -322,7 +329,7 @@ pub struct PhysicsSpec {
     #[serde(default = "one")]
     pub rotate: f64,
     /// How much prior momentum carries over (0..1). Higher = floatier.
-    #[serde(default = "half")]
+    #[serde(default = "d_inertia")]
     pub inertia: f64,
     /// Spring pull back toward the pose. Higher = stiffer.
     #[serde(default = "d_strength")]
@@ -344,14 +351,19 @@ pub struct PhysicsSpec {
 fn one() -> f64 {
     1.0
 }
-fn half() -> f64 {
-    0.5
+// Physics defaults tuned for LIFE: a softer spring that carries more momentum and settles slower,
+// so a deformable tail/hair/cape actually swings when its parent bone moves (the old 60/0.85/0.5
+// was a stiff spring that snapped back almost instantly and read as dead). Constant wind/gravity
+// are left at 0 — they'd bias the rest pose (a permanent lean), not create motion; the motion
+// comes from responding to the (now livelier) parent bone.
+fn d_inertia() -> f64 {
+    0.65
 }
 fn d_strength() -> f64 {
-    60.0
+    45.0
 }
 fn d_damping() -> f64 {
-    0.85
+    0.72
 }
 
 impl PhysicsSpec {
@@ -362,9 +374,9 @@ impl PhysicsSpec {
         Self {
             bone: bone.into(),
             rotate: 1.0,
-            inertia: 0.5,
-            strength: 60.0,
-            damping: 0.85,
+            inertia: 0.65,
+            strength: 45.0,
+            damping: 0.72,
             wind: 0.0,
             gravity: 0.0,
             mix: 1.0,
