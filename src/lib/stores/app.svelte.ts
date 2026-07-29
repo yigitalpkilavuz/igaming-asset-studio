@@ -1,12 +1,13 @@
 import type { GameConfig } from "$lib/ipc";
 
-/** Top-level navigation: three sections in the masthead.
+/** Top-level navigation: the masthead sections.
  *  - `library`: the game catalogue (create / open).
  *  - `produce`: one game's Producer — everything about MAKING images.
  *  - `animate`: the Animate section — asset rail + studio/layers for MOVING them.
- *  The open game is STICKY: visiting the Library keeps it loaded in Produce/Animate
+ *  - `preview`: the Game preview — the real assets composed into a slot screen.
+ *  The open game is STICKY: visiting the Library keeps it loaded in the other sections
  *  until another game is opened. */
-export type Section = "library" | "produce" | "animate";
+export type Section = "library" | "produce" | "animate" | "preview";
 
 export const appState = $state<{
   section: Section;
@@ -108,6 +109,13 @@ export function goLayers(gameId: string, assetKey: string) {
 /** Select an asset within the Animate section. */
 export function selectAnimateAsset(assetKey: string | null) {
   appState.animateAssetKey = assetKey;
+}
+
+/** Open the Game preview for a game (the real assets composed into a slot screen). */
+export function goPreview(gameId: string) {
+  appState.gameId = gameId;
+  appState.newGame = false;
+  appState.section = "preview";
 }
 
 export function openSettings() {
