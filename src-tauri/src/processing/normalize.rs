@@ -19,7 +19,7 @@ use crate::model::asset_record::MassReport;
 use crate::model::game_config::FitClass;
 
 /// Everything the fit pass needs for one symbol (all per-project config + the
-/// per-symbol nudge).
+/// per-symbol footprint nudge).
 #[derive(Debug, Clone, Copy)]
 pub struct MassSpec {
     pub class: FitClass,
@@ -28,9 +28,18 @@ pub struct MassSpec {
     pub alpha_floor: u8,
     pub safe_w: f64,
     pub safe_h: f64,
-    /// Art-director override (applied to the blended scale BEFORE the box clamp —
-    /// an override can never cause overflow).
+    /// Per-symbol footprint vs the class default: scales the class TARGET (ink ∝ nudge²
+    /// because ink is an area, height ∝ nudge because it is linear). So 0.6 ships this
+    /// symbol at ~60% of its class footprint and 1.0 = the class norm. This is what keeps
+    /// relative scale between symbols (a coin small, a dragon large) instead of inflating
+    /// everything to one class target. Still capped by the safe box — it can never
+    /// overflow the cell.
     pub nudge: f64,
+    /// Trust a set sheet's own relative scale: skip the class-target rescale entirely and
+    /// keep each cut cell at its native size (only re-center it). Set for `provider="set"`
+    /// variations, where the model already sized every symbol against its neighbours on
+    /// one sheet.
+    pub trust_scale: bool,
     /// Fixed square output canvas (0 = keep the source canvas).
     pub canvas: u32,
 }
@@ -97,18 +106,32 @@ pub fn fit_symbol(
     let bbox_w = (m.x1 - m.x0 + 1) as f64;
     let bbox_h = (m.y1 - m.y0 + 1) as f64;
 
-    // 2. Scale: geometric blend of the height candidate and the ink candidate.
+    // 2. Scale. The safe box is a hard cap on the bbox in every mode.
     let class = spec.class;
-    let target_ink = class.ink.clamp(0.01, 1.0) * cell_area;
-    let s_height = (class.height.clamp(0.05, 1.0) * oh as f64) / bbox_h;
+    let nudge = spec.nudge.clamp(0.25, 4.0);
+    let s_max = ((spec.safe_w.clamp(0.1, 1.0) * ow as f64) / bbox_w)
+        .min((spec.safe_h.clamp(0.1, 1.0) * oh as f64) / bbox_h);
+
+    // Class targets scaled by this symbol's authored footprint: ink is an AREA (∝ nudge²),
+    // height is LINEAR (∝ nudge). Reported below so the flag reflects the authored intent.
+    let eff_ink = (class.ink * nudge * nudge).clamp(0.01, 1.0);
+    let eff_height = (class.height * nudge).clamp(0.05, 1.0);
+    let target_ink = eff_ink * cell_area;
+    let s_height = (eff_height * oh as f64) / bbox_h;
     let s_area = (target_ink / m.ink).sqrt();
-    let w = spec.area_weight.clamp(0.0, 1.0);
-    let s_raw = s_height.powf(1.0 - w) * s_area.powf(w);
-    let s_max =
-        ((spec.safe_w.clamp(0.1, 1.0) * ow as f64) / bbox_w).min((spec.safe_h.clamp(0.1, 1.0) * oh as f64) / bbox_h);
-    let box_clamped = s_raw > s_max * 1.001;
-    // The nudge rides on the blended scale but can never break the box clamp.
-    let s_final = (s_raw.min(s_max) * spec.nudge.clamp(0.25, 4.0)).min(s_max);
+
+    let (s_final, box_clamped) = if spec.trust_scale {
+        // Trust the sheet: keep the cut cell's native size (only re-centered below) so the
+        // model's own relative scale between symbols survives Process instead of every
+        // cell being re-normalised to its class target.
+        (1.0, false)
+    } else {
+        // Author intent: geometric blend of the height candidate and the ink candidate,
+        // hard-clamped to the safe box.
+        let w = spec.area_weight.clamp(0.0, 1.0);
+        let s_raw = s_height.powf(1.0 - w) * s_area.powf(w);
+        (s_raw.min(s_max), s_raw > s_max * 1.001)
+    };
     let upscaled = s_final > 1.15;
 
     // 3. Place: uniform Lanczos resample of the WHOLE image (keeps faint wisps),
@@ -154,19 +177,22 @@ pub fn fit_symbol(
         }
     }
 
-    // 4. Report.
+    // 4. Report. Target reflects the authored footprint (class × nudge²); a trusted set
+    //    cell is never flagged — its scale is the sheet's, not a class target to hit.
     let ink_before = m.ink / cell_area;
     let ink_after = m.ink * s_final * s_final / cell_area;
-    let flag = if ink_after < class.ink - class.tolerance {
+    let flag = if spec.trust_scale {
+        "ok"
+    } else if ink_after < eff_ink - class.tolerance {
         "underweight"
-    } else if ink_after > class.ink + class.tolerance {
+    } else if ink_after > eff_ink + class.tolerance {
         "overweight"
     } else {
         "ok"
     };
     let report = MassReport {
         achieved: ink_after,
-        target: class.ink,
+        target: eff_ink,
         clamped: box_clamped || placement_clamped,
         clamped_by: if box_clamped {
             "box".into()
@@ -203,6 +229,7 @@ mod tests {
             safe_w: 0.92,
             safe_h: 0.88,
             nudge: 1.0,
+            trust_scale: false,
             canvas: 0,
         }
     }
@@ -339,5 +366,45 @@ mod tests {
         let fitted = image::load_from_memory(&out.unwrap()).unwrap().to_rgba8();
         assert_eq!(fitted.dimensions(), (512, 512));
         assert_eq!(rep.unwrap().flag, "ok");
+    }
+
+    /// The per-symbol nudge now scales the FOOTPRINT (the target), so the same art
+    /// authored at 0.6 ships far smaller than at 1.0 — the relative-scale control (coin
+    /// vs dragon), not the old box-capped final multiply. And it reports OK against its
+    /// own scaled target, not UNDERWEIGHT vs the class.
+    #[test]
+    fn nudge_scales_the_authored_footprint() {
+        let img = solid_rect(1000, 1000, 366, 250, 633, 750);
+        let big = fit_symbol(&png(&img), spec(0.30, 0.75, 0.03)).unwrap();
+        let mut small_spec = spec(0.30, 0.75, 0.03);
+        small_spec.nudge = 0.6;
+        let small = fit_symbol(&png(&img), small_spec).unwrap();
+        let big_ink = ink_pct(&big.0.unwrap(), 26);
+        let small_ink = ink_pct(&small.0.unwrap(), 26);
+        assert!(
+            small_ink < big_ink * 0.5,
+            "nudge 0.6 ships far less ink: {small_ink:.3} vs {big_ink:.3}"
+        );
+        assert_eq!(small.1.unwrap().flag, "ok");
+    }
+
+    /// Trust mode keeps a set cell at its native size (only re-centers), so the sheet's
+    /// relative scale survives: a subject twice the linear size of another stays ~4× the
+    /// ink afterwards, instead of both being normalised to one class target.
+    #[test]
+    fn trust_scale_keeps_native_relative_size() {
+        let big = solid_rect(1000, 1000, 300, 300, 700, 700); // 400²
+        let small = solid_rect(1000, 1000, 400, 400, 600, 600); // 200²
+        let mut s = spec(0.30, 0.75, 0.03);
+        s.trust_scale = true;
+        let big_out = fit_symbol(&png(&big), s).unwrap();
+        let small_out = fit_symbol(&png(&small), s).unwrap();
+        let big_ink = ink_pct(&big_out.0.unwrap(), 26);
+        let small_ink = ink_pct(&small_out.0.unwrap(), 26);
+        assert!(
+            big_ink > small_ink * 3.0,
+            "native relative scale preserved: big {big_ink:.3} vs small {small_ink:.3}"
+        );
+        assert_eq!(big_out.1.unwrap().flag, "ok", "trusted cells are never flagged");
     }
 }

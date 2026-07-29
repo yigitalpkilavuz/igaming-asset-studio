@@ -92,6 +92,10 @@ pub async fn process_variation_core(
     // judges symbol importance by covered area, not edge length, so a thin instrument
     // and a wide book in the same tier must carry the same mass. Targets + the extent
     // clamp are per-project config; the per-symbol nudge rides on top.
+    // A cell cut from a "Generate as set" sheet already carries the model's own relative
+    // scale (every symbol sized against its neighbours on one sheet); trust that instead
+    // of re-normalising each cell to its class target, which would flatten it back.
+    let from_set = record.variations[idx].provider == "set";
     let sym_info = project.config.symbol_for_asset(&asset_key);
     let mass = if descriptor.kind == AssetKind::Symbol && !sym_info.is_some_and(|(_, exp)| exp) {
         // The `_expanded` twin of an expanding wild skips the fit pass entirely — the
@@ -106,6 +110,7 @@ pub async fn process_variation_core(
             safe_w: sizing.safe_w,
             safe_h: sizing.safe_h,
             nudge: sym.map(|s| s.size_nudge).unwrap_or(1.0),
+            trust_scale: from_set,
             canvas: sizing.canvas,
         })
     } else {

@@ -387,6 +387,11 @@
       <span>Symbols <span class="muted">({config.symbols.length})</span></span>
       <button type="button" onclick={addSymbol}>+ Add symbol</button>
     </div>
+    <p class="sym-hint muted">
+      The last field is <b>relative size</b> (footprint vs the pay class, 1 = default): a
+      coin at 0.6 ships smaller than a dragon at 1.2. Judge it on the contact sheet.
+      Symbols made with “Generate as set” keep the sheet's own scale.
+    </p>
     <div class="symbol-rows">
       {#each config.symbols as symbol, i (i)}
         <div class="symbol-row">
@@ -405,12 +410,12 @@
           <input
             class="sz"
             type="number"
-            min="0.5"
-            max="2"
+            min="0.3"
+            max="1.5"
             step="0.05"
             value={symbol.sizeNudge ?? 1}
             oninput={(e) => (symbol.sizeNudge = +e.currentTarget.value || 1)}
-            title="manual size nudge ×N on top of the mass rule (1 = neutral; the max-side clamp still holds)"
+            title="Relative size vs this symbol's pay class — 1 = class default, 0.6 = a small object (coin), 1.3 = a big one (dragon). Judge it on the contact sheet. Symbols made with “Generate as set” keep the sheet's own scale and ignore this."
           />
           <button type="button" class="rm" title="Remove" onclick={() => removeSymbol(i)}>×</button>
         </div>
@@ -597,6 +602,11 @@
     font-family: var(--font-sans);
     font-size: 1rem;
     color: var(--bone);
+  }
+  .sym-hint {
+    margin: -0.2rem 0 0.7rem;
+    font-size: 0.8rem;
+    line-height: 1.45;
   }
   .symbol-rows {
     display: flex;

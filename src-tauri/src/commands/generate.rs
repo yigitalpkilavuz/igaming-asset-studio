@@ -1213,7 +1213,7 @@ fn split_at_seams(
 /// otherwise). A cell is only ~1/cols of the canvas, so this restores the working
 /// resolution the rest of the pipeline expects.
 fn upscale_cell(
-    cell: image::RgbaImage,
+    mut cell: image::RgbaImage,
     target_long: u32,
     idx: usize,
     pre: &crate::processing::Preflight,
@@ -1221,6 +1221,11 @@ fn upscale_cell(
     if cell.width().max(cell.height()) >= target_long {
         return cell;
     }
+    // Bleed the subject's colour outward into transparent pixels first, so neither the
+    // upscaler nor the Lanczos fallback drags edge colour toward the garbage RGB hiding
+    // under alpha≈0 (the dark-halo / fringe fix). Alpha is untouched; a no-op on an
+    // opaque (chroma-background) cell.
+    bleed_transparent_rgb(&mut cell, 8);
     if let Some(bin) = &pre.upscale_bin {
         let tmp = std::env::temp_dir().join(format!("wf_setcell_{}_{idx}.png", std::process::id()));
         let write_ok = image::DynamicImage::ImageRgba8(cell.clone())
@@ -1412,6 +1417,67 @@ fn fit_long(img: image::DynamicImage, target: u32) -> image::DynamicImage {
     )
 }
 
+/// Bleed opaque RGB outward into (near-)transparent pixels so a later resample or upscaler
+/// never blends edge colour toward the undefined RGB sitting under alpha≈0 — the classic
+/// dark halo / fringe around a cut-out. Alpha is left untouched; each pass fills one more
+/// ring of transparent pixels from the average of their already-known neighbours. A no-op
+/// when the cell has no transparency (an opaque chroma-background cell).
+fn bleed_transparent_rgb(img: &mut image::RgbaImage, passes: u32) {
+    const A_FLOOR: u8 = 16;
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 {
+        return;
+    }
+    let mut known: Vec<bool> = img.pixels().map(|p| p.0[3] >= A_FLOOR).collect();
+    for _ in 0..passes {
+        let snapshot = img.clone();
+        let known_snap = known.clone();
+        let mut changed = false;
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) as usize;
+                if known_snap[i] {
+                    continue;
+                }
+                let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                        if (dx == 0 && dy == 0)
+                            || nx < 0
+                            || ny < 0
+                            || nx >= w as i32
+                            || ny >= h as i32
+                        {
+                            continue;
+                        }
+                        let ni = (ny as u32 * w + nx as u32) as usize;
+                        if !known_snap[ni] {
+                            continue;
+                        }
+                        let p = snapshot.get_pixel(nx as u32, ny as u32).0;
+                        r += p[0] as u32;
+                        g += p[1] as u32;
+                        b += p[2] as u32;
+                        n += 1;
+                    }
+                }
+                if n > 0 {
+                    let px = img.get_pixel_mut(x, y);
+                    px.0[0] = (r / n) as u8;
+                    px.0[1] = (g / n) as u8;
+                    px.0[2] = (b / n) as u8;
+                    known[i] = true;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
 /// Run Real-ESRGAN (`realesrgan-ncnn-vulkan -i in -o out`) and return the upscaled PNG bytes.
 /// Passes `-m <models>` resolved next to the (real) binary so it works from any working dir.
 fn run_realesrgan(bin: &str, input: &std::path::Path) -> Result<Vec<u8>, String> {
@@ -1421,7 +1487,15 @@ fn run_realesrgan(bin: &str, input: &std::path::Path) -> Result<Vec<u8>, String>
     if let Ok(real) = std::fs::canonicalize(bin) {
         if let Some(models) = real.parent().map(|d| d.join("models")) {
             if models.is_dir() {
-                cmd.args(["-m", &models.to_string_lossy(), "-n", "realesrgan-x4plus"]);
+                // Prefer the illustration/anime weight (faithful on flat game art, far
+                // fewer photo-tuned artefacts) when the ncnn bundle shipped it; otherwise
+                // fall back to the general model.
+                let name = if models.join("realesrgan-x4plus-anime.param").exists() {
+                    "realesrgan-x4plus-anime"
+                } else {
+                    "realesrgan-x4plus"
+                };
+                cmd.args(["-m", &models.to_string_lossy(), "-n", name]);
             }
         }
     }
@@ -2030,5 +2104,25 @@ mod tests {
         assert_eq!(refs[1], vec![1]);
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The alpha bleed fills hidden RGB from covered neighbours WITHOUT touching alpha,
+    /// so a later resample/upscaler can't drag the cut edge toward the (here black) colour
+    /// sitting under alpha 0.
+    #[test]
+    fn bleed_fills_hidden_rgb_and_keeps_alpha() {
+        // One opaque red pixel in a field of fully-transparent black.
+        let mut img = image::RgbaImage::new(5, 5);
+        img.put_pixel(2, 2, image::Rgba([200, 40, 40, 255]));
+        bleed_transparent_rgb(&mut img, 2);
+        // A neighbour's alpha stays 0 (still invisible) but its RGB is no longer black.
+        let n = img.get_pixel(2, 1).0;
+        assert_eq!(n[3], 0, "alpha untouched");
+        assert!(
+            n[0] > 100 && n[1] < 120 && n[2] < 120,
+            "colour bled from the red pixel: {n:?}"
+        );
+        // The opaque pixel itself is unchanged.
+        assert_eq!(img.get_pixel(2, 2).0, [200, 40, 40, 255]);
     }
 }
