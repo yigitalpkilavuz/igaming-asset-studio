@@ -9,6 +9,7 @@
   import BlueprintModal from "$lib/components/producer/BlueprintModal.svelte";
   import GamePreview from "$lib/components/preview/GamePreview.svelte";
   import AudioBench from "$lib/components/producer/AudioBench.svelte";
+  import MotionLoop from "$lib/components/producer/MotionLoop.svelte";
   import SoundStudio from "$lib/components/sound/SoundStudio.svelte";
   import FontStudio from "$lib/components/fonts/FontStudio.svelte";
   import SettingsModal from "$lib/components/SettingsModal.svelte";
@@ -31,6 +32,8 @@
       asset={audioAsset as unknown as AssetDescriptor}
       config={audioConfig as unknown as GameConfig}
     />
+  {:else if component === "MotionLoop"}
+    <MotionLoop gameId="mock" assetKey="symbol_wild" seedPrompt="" />
   {:else if component === "SoundStudio"}
     <SoundStudio gameId="mock" />
   {:else if component === "FontStudio"}

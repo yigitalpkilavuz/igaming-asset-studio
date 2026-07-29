@@ -11,6 +11,7 @@
   import { jobsState } from "$lib/stores/jobs.svelte";
   import LayersView from "../layers/LayersView.svelte";
   import Studio from "../studio/Studio.svelte";
+  import MotionLoop from "../producer/MotionLoop.svelte";
 
   let { gameId }: { gameId: string } = $props();
 
@@ -71,6 +72,15 @@
   const selected = $derived(
     [...rigAssets, ...layerAssets].find((a) => a.key === selectedKey) ?? null,
   );
+
+  // For a symbol/mascot, the same asset can animate two ways: a Spine rig or a spritesheet
+  // motion loop (rigging optional). The switch defaults back to the rig each time you pick a
+  // new asset — the rig is the primary technique; the loop is one click away.
+  let technique = $state<"rig" | "loop">("rig");
+  $effect(() => {
+    void selectedKey;
+    technique = "rig";
+  });
 
   // Auto-select the first available asset when nothing (or something stale) is picked.
   $effect(() => {
@@ -154,9 +164,24 @@
     {:else if selected}
       {#key selected.key}
         {#if selected.kind === "background"}
-          <LayersView {gameId} assetKey={selected.key} />
+          <div class="editor"><LayersView {gameId} assetKey={selected.key} /></div>
         {:else}
-          <Studio {gameId} assetKey={selected.key} />
+          <div class="technique-bar">
+            <button class="tq" class:on={technique === "rig"} onclick={() => (technique = "rig")}>Spine rig</button>
+            <button class="tq" class:on={technique === "loop"} onclick={() => (technique = "loop")}>Motion loop</button>
+            <span class="tq-hint muted">
+              {technique === "rig"
+                ? "cut → rig → animate a skeleton"
+                : "spritesheet loop — rigging optional, ships as a spriteSheet"}
+            </span>
+          </div>
+          <div class="editor">
+            {#if technique === "loop"}
+              <div class="loop-host"><MotionLoop {gameId} assetKey={selected.key} /></div>
+            {:else}
+              <Studio {gameId} assetKey={selected.key} />
+            {/if}
+          </div>
         {/if}
       {/key}
     {:else if !loading}
@@ -268,6 +293,45 @@
     position: relative;
     min-width: 0;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .editor {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+  /* Technique switch (symbols/mascots): Spine rig vs spritesheet motion loop. */
+  .technique-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-4);
+    border-bottom: 1px solid var(--line);
+    background: var(--ink);
+  }
+  .tq {
+    padding: var(--space-1) var(--space-3);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--bone-dim);
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+  .tq.on {
+    background: var(--gold-glow);
+    border-color: var(--gold-deep);
+    color: var(--gold);
+  }
+  .tq-hint {
+    margin-left: auto;
+    font-size: 0.7rem;
+  }
+  .loop-host {
+    max-width: 440px;
+    margin: 0 auto;
+    padding: var(--space-6) var(--space-5);
   }
   .pad {
     padding: var(--space-6);

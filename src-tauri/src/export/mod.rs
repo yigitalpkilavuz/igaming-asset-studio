@@ -267,32 +267,28 @@ pub fn build_dist_gated(base: &Path, game_id: &str, force: bool) -> Result<Expor
                 continue;
             }
         }
-        // Fx scene assets ship their generated AI sheet as a PIXI spritesheet atlas.
-        if project
-            .config
-            .scene
-            .def_for_key(&asset.key)
-            .is_some_and(|d| d.kind == crate::model::game_config::SceneKind::Fx)
-        {
-            if let Some(entry) = export_fx_sheet(
-                base,
-                game_id,
-                asset,
-                &dist_root,
-                project.config.scene.webp_quality as f32,
-            )? {
-                written.push(asset.key.clone());
-                manifest_entries.push(entry);
-                continue;
-            }
-        }
-        // Precedence: studio Spine export → cut layer plates → flat raster.
+        // Precedence: studio Spine export → cut layer plates → baked motion-loop spritesheet → flat.
         if let Some(entry) = export_spine(base, game_id, asset, &dist_root)? {
             written.push(asset.key.clone());
             manifest_entries.push(entry);
             continue;
         }
         if let Some(entry) = export_layer_plates(base, game_id, asset, &dist_root)? {
+            written.push(asset.key.clone());
+            manifest_entries.push(entry);
+            continue;
+        }
+        // Any asset with a baked motion loop (ai_sheet/) ships it as a PIXI spriteSheet — a scene FX
+        // asset, or a symbol animated via a loop instead of a Spine rig. Placed below plates so a
+        // background's parallax stack still wins; returns None when there's no sheet, so un-looped
+        // assets fall straight through to the flat raster.
+        if let Some(entry) = export_motion_sheet(
+            base,
+            game_id,
+            asset,
+            &dist_root,
+            project.config.scene.webp_quality as f32,
+        )? {
             written.push(asset.key.clone());
             manifest_entries.push(entry);
             continue;
@@ -434,10 +430,11 @@ fn emit_scene_manifest(config: &crate::model::game_config::GameConfig) -> Option
     serde_json::to_string_pretty(&serde_json::json!({ "schema": 1, "layers": layers })).ok()
 }
 
-/// If an fx scene asset has a generated AI sheet, ship it as a PIXI spritesheet:
+/// If an asset has a baked motion loop (`ai_sheet/`), ship it as a PIXI spritesheet:
 /// `<key>.sheet.webp` + `<key>.sheet.json` (standard "frames"+"meta", frame_000… in
-/// play order, one clip per atlas; fps/loop live in scene.json, NOT in meta).
-fn export_fx_sheet(
+/// play order, one clip per atlas; fps/loop live in scene.json, NOT in meta). Applies to any
+/// asset with a sheet — a scene FX asset or a symbol looped instead of rigged; `None` if absent.
+fn export_motion_sheet(
     base: &Path,
     game_id: &str,
     asset: &AssetDescriptor,
@@ -1238,6 +1235,75 @@ mod tests {
         assert!(report
             .manifest_snippet
             .contains("../../assets/spines/symbols/symbol_h1.atlas"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn motion_sheet_ships_for_a_symbol_looped_instead_of_rigged() {
+        // A symbol animated via a baked loop (no Spine rig) must SHIP as a spriteSheet, not fall back
+        // to a flat still — the gate that once limited sheets to scene-FX assets is lifted.
+        let base =
+            std::env::temp_dir().join(format!("wf_export_sheet_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let game_id = "expgame";
+
+        storage::write_project(&base, &Project::new(config(), 0.0)).unwrap();
+
+        // A processed raster variation exists (the flat fallback)…
+        let var_dir = storage::variation_dir(&base, game_id, "symbol_h1", "v001");
+        fs::create_dir_all(var_dir.join("stages")).unwrap();
+        fs::write(var_dir.join("stages/final.webp"), b"fake-webp").unwrap();
+        let record = AssetRecord {
+            key: "symbol_h1".into(),
+            prompt: PromptState { subject: "x".into(), ..Default::default() },
+            variations: vec![Variation {
+                id: "v001".into(),
+                parent: None,
+                created_at: 0.0,
+                prompt_snapshot: "x".into(),
+                provider: "openai_image".into(),
+                model: None,
+                seed: None,
+                raw_file: "variations/v001/raw.png".into(),
+                status: VariationStatus::Ready,
+                background: Default::default(),
+                mass_report: None,
+                tone_report: None,
+                audio_report: None,
+                locked: false,
+                stages: vec![StageOutput { name: "webp".into(), file: "stages/final.webp".into() }],
+            }],
+            active_variation: Some("v001".into()),
+            template_only: false,
+        };
+        storage::write_asset_record(&base, game_id, &record).unwrap();
+
+        // …but a baked motion loop also exists (a real 4-frame strip) → the sheet wins.
+        let sheet_dir = storage::asset_dir(&base, game_id, "symbol_h1").join("ai_sheet");
+        fs::create_dir_all(&sheet_dir).unwrap();
+        let strip = image::RgbaImage::from_fn(32, 8, |x, _| {
+            image::Rgba([((x / 8) as u8) * 60, 0, 0, 255]) // 4 frames of 8px
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(strip)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        fs::write(sheet_dir.join("sheet.png"), png.into_inner()).unwrap();
+        fs::write(sheet_dir.join("sheet.json"), br#"{"frames":4,"prompt":"video: x"}"#).unwrap();
+
+        let report = build_dist(&base, game_id).unwrap();
+
+        assert!(report.written.contains(&"symbol_h1".to_string()));
+        let dist = Path::new(&report.dist_path);
+        assert!(dist.join("symbols/symbol_h1.sheet.webp").is_file());
+        assert!(dist.join("symbols/symbol_h1.sheet.json").is_file());
+        // Flat raster suppressed — the loop is the shipped animation.
+        assert!(!dist.join("symbols/symbol_h1.webp").is_file());
+        assert!(report.manifest_snippet.contains("symbol_h1: { type: 'spriteSheet'"));
+        assert!(report
+            .manifest_snippet
+            .contains("../../assets/symbols/symbol_h1.sheet.json"));
 
         let _ = fs::remove_dir_all(&base);
     }
