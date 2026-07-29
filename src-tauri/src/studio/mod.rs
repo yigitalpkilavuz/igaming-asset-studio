@@ -22,6 +22,7 @@ pub mod segment;
 pub mod spine42;
 pub mod store;
 pub mod turn;
+pub mod video;
 
 use sha2::{Digest, Sha256};
 

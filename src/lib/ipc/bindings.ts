@@ -44,6 +44,15 @@ export const commands = {
 	 *  `frames` is clamped to the detailed-mode range (2–24, even).
 	 */
 	generateAiSheet: (gameId: string, assetKey: string, prompt: string, frames: number) => typedError<AiSheet, string>(__TAURI_INVOKE("generate_ai_sheet", { gameId, assetKey, prompt, frames })),
+	/**
+	 *  Bake a short video clip into the SAME transparent FX spritesheet the SpriteCook lane produces
+	 *  (`ai_sheet/sheet.png` + `sheet.json`), so preview + export reuse it unchanged. This is the
+	 *  license-safe lane for motion a rig can't author (flames, bursts, transformations): the video is
+	 *  bring-your-own (an imported file), matting is our own Rust cutters, and the clip never ships —
+	 *  only the baked sprite does. `frames` is clamped to 2–24 (even); `bg` picks the matte, `loop_mode`
+	 *  how the clip is made seamless.
+	 */
+	generateVideoSheet: (gameId: string, assetKey: string, srcPath: string, bg: VideoBg, frames: number, loopMode: VideoLoop) => typedError<AiSheet, string>(__TAURI_INVOKE("generate_video_sheet", { gameId, assetKey, srcPath, bg, frames, loopMode })),
 	/**  The saved AI sheet for an asset, if any. */
 	getAiSheet: (gameId: string, assetKey: string) => typedError<{
 	/**  Sheet PNG as a data URL (for immediate preview). */
@@ -1832,6 +1841,20 @@ export type VariationStatus = "generating" | "ready" | "failed";
 export type VertexWeights = {
 	influences: BoneInfluence[],
 };
+
+/**  How the incoming video carries its subject over the background — picks the matte. */
+export type VideoBg = 
+/**  Solid magenta background → chroma-key. Cleanest; steer the generator to a flat magenta. */
+"magenta" | 
+/**  Light / glow on pure black → luminance-to-alpha (flames, sparks, auras, coin shine). */
+"glow";
+
+/**  How to make the clip loop. */
+export type VideoLoop = 
+/**  Play forward then back (0..N-1..1) — ALWAYS seamless; best for ambient wobble/shimmer. */
+"pingPong" | 
+/**  Take the subrange between the most-similar frame pair — best for genuinely cyclic motion. */
+"seam";
 
 /**
  *  The pay system, which gates several asset categories (paylines vs way-indicator

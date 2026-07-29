@@ -60,6 +60,8 @@ export type {
   PhysicsSpec,
   BlendMode,
   AiSheet,
+  VideoBg,
+  VideoLoop,
   LayersDoc,
   Layer,
   LayerSettings,

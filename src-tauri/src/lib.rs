@@ -45,6 +45,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::prompts::set_gamelab_key,
         commands::prompts::gamelab_key_present,
         commands::sheet::generate_ai_sheet,
+        commands::sheet::generate_video_sheet,
         commands::sheet::get_ai_sheet,
         commands::prompts::get_asset_record,
         commands::prompts::list_asset_records,

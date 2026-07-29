@@ -18,6 +18,8 @@
     type Preflight,
     type ProviderInfo,
     type QualityReport,
+    type VideoBg,
+    type VideoLoop,
   } from "$lib/ipc";
   import { listen } from "@tauri-apps/api/event";
   import { assetStatus } from "$lib/assetStatus";
@@ -157,6 +159,12 @@
   let sheetProgress = $state("");
   let aiSheet = $state<AiSheet | null>(null);
   let sheetCanvas = $state<HTMLCanvasElement | null>(null);
+  // The loop can come from SpriteCook (animate the approved still) or from a bring-your-own video
+  // clip baked to the same sheet — the license-safe lane for motion a rig can't author.
+  let sheetSource = $state<"ai" | "video">("ai");
+  let videoPath = $state("");
+  let videoBg = $state<VideoBg>("magenta");
+  let videoLoop = $state<VideoLoop>("pingPong");
 
   $effect(() => {
     commands.spritecookKeyPresent().then((ok) => (spritecookReady = ok));
@@ -349,6 +357,33 @@
         const sheet = await unwrap(commands.generateAiSheet(gameId, asset.key, prompt, frames));
         // Not an AssetRecord — deliver directly; a remounted bench reloads it from disk.
         aiSheet = sheet;
+        return null;
+      },
+    });
+    if (res.error) error = res.error;
+  }
+
+  async function pickVideo() {
+    const picked = await open({
+      multiple: false,
+      filters: [{ name: "Video", extensions: ["mp4", "mov", "webm", "gif", "m4v", "mkv"] }],
+    });
+    if (typeof picked === "string") videoPath = picked;
+  }
+
+  async function runVideoSheet() {
+    error = "";
+    const [path, bg, frames, loopMode] = [videoPath, videoBg, sheetFrames, videoLoop];
+    const res = await runJob({
+      gameId,
+      assetKey: asset.key,
+      kind: "sheet",
+      label: `Video loop · ${asset.key}`,
+      exec: async () => {
+        const sheet = await unwrap(
+          commands.generateVideoSheet(gameId, asset.key, path, bg, frames, loopMode),
+        );
+        aiSheet = sheet; // a remounted bench reloads it from disk
         return null;
       },
     });
@@ -1050,7 +1085,7 @@
         <button class="tb-btn" disabled={!activeVar || !bigPreview} title="paint areas to full transparency — cut-outs, leftover backdrop" onclick={() => (alphaEditOpen = true)}>Edit alpha</button>
         <button class="tb-btn" class:on={takeAction === "glyph"} title="compose a mark onto a shared base template — a new take, pixel-identical base" onclick={() => toggleTake("glyph")}>✦ On base</button>
         {#if status.ready}
-          <button class="tb-btn" class:on={takeAction === "sheet"} title="short looping spritesheet from the approved image (SpriteCook)" onclick={() => toggleTake("sheet")}>✦ Motion loop</button>
+          <button class="tb-btn" class:on={takeAction === "sheet"} title="short looping spritesheet — animate the approved still (SpriteCook) or bake a video clip" onclick={() => toggleTake("sheet")}>✦ Motion loop</button>
         {/if}
         <span class="tb-spacer"></span>
         {#if animatable}
@@ -1184,21 +1219,61 @@
               </p>
             {/if}
           {:else if takeAction === "sheet"}
-            {#if !spritecookReady}
-              <p class="muted tiny">
-                Needs a SpriteCook key — add it in Settings. Animates the approved image
-                into a looping spritesheet (good for FX and ambient motion; use the
-                Animation Studio for real rigs).
-              </p>
+            <div class="src-toggle">
+              <button class="seg" class:on={sheetSource === "ai"} onclick={() => (sheetSource = "ai")}>AI · animate still</button>
+              <button class="seg" class:on={sheetSource === "video"} onclick={() => (sheetSource = "video")}>Video file</button>
+            </div>
+            {#if sheetSource === "ai"}
+              {#if !spritecookReady}
+                <p class="muted tiny">
+                  Needs a SpriteCook key — add it in Settings. Animates the approved image
+                  into a looping spritesheet (good for FX and ambient motion; use the
+                  Animation Studio for real rigs).
+                </p>
+              {:else}
+                <label class="field">
+                  <span class="muted tiny">motion — what moves and how</span>
+                  <textarea
+                    rows="2"
+                    bind:value={sheetPrompt}
+                    placeholder="e.g. the flame flickers and sways gently, embers drift upward"
+                  ></textarea>
+                </label>
+                <div class="row2">
+                  <select bind:value={sheetFrames}>
+                    <option value={8}>8 frames</option>
+                    <option value={12}>12 frames</option>
+                    <option value={16}>16 frames</option>
+                    <option value={24}>24 frames</option>
+                  </select>
+                  <button onclick={runAiSheet} disabled={sheetBusy || !sheetPrompt.trim()}>
+                    {sheetBusy
+                      ? `Animating… ${sheetProgress}`
+                      : aiSheet
+                        ? "Redo loop"
+                        : "Generate loop"}
+                  </button>
+                </div>
+              {/if}
             {:else}
-              <label class="field">
-                <span class="muted tiny">motion — what moves and how</span>
-                <textarea
-                  rows="2"
-                  bind:value={sheetPrompt}
-                  placeholder="e.g. the flame flickers and sways gently, embers drift upward"
-                ></textarea>
-              </label>
+              <p class="muted tiny">
+                Bake a short clip into a transparent looping sheet — for motion a rig can't
+                author (flames, bursts, transformations). The clip stays local; only the
+                baked sprite ships.
+              </p>
+              <button class="file-pick mono" onclick={pickVideo} title={videoPath}>
+                {videoPath ? (videoPath.split("/").pop() ?? videoPath) : "Choose a video…"}
+              </button>
+              <div class="row2">
+                <select bind:value={videoBg} title="how the clip's background is removed">
+                  <option value="magenta">magenta bg → key</option>
+                  <option value="glow">glow on black</option>
+                </select>
+                <select bind:value={videoLoop} title="how the clip is made seamless">
+                  <option value="pingPong">ping-pong loop</option>
+                  <option value="seam">seam-match loop</option>
+                </select>
+              </div>
               <div class="row2">
                 <select bind:value={sheetFrames}>
                   <option value={8}>8 frames</option>
@@ -1206,28 +1281,28 @@
                   <option value={16}>16 frames</option>
                   <option value={24}>24 frames</option>
                 </select>
-                <button onclick={runAiSheet} disabled={sheetBusy || !sheetPrompt.trim()}>
-                  {sheetBusy
-                    ? `Animating… ${sheetProgress}`
-                    : aiSheet
-                      ? "Redo loop"
-                      : "Generate loop"}
+                <button onclick={runVideoSheet} disabled={sheetBusy || !videoPath}>
+                  {sheetBusy ? "Baking…" : aiSheet ? "Redo bake" : "Bake loop"}
                 </button>
               </div>
-              {#if aiSheet}
-                <canvas class="sheet-preview" bind:this={sheetCanvas}></canvas>
-                <p class="muted tiny">
-                  {aiSheet.frames} frames · {aiSheet.width}×{aiSheet.height} — saved beside
-                  the asset as <span class="mono">ai_sheet/sheet.png</span>.
-                  {#if sheetSeamPct !== null}
-                    <br />
-                    <span class:seam-bad={sheetSeamPct > 8}>
-                      loop seam: {sheetSeamPct.toFixed(1)}% first↔last diff
-                      {sheetSeamPct > 8 ? "— visible pop likely, consider redoing" : "— loops cleanly"}
-                    </span>
-                  {/if}
-                </p>
-              {/if}
+              <p class="muted tiny">
+                Generate the clip on a flat <strong>magenta</strong> background (or pure black
+                for glows/sparks) so the cutout is clean.
+              </p>
+            {/if}
+            {#if aiSheet}
+              <canvas class="sheet-preview" bind:this={sheetCanvas}></canvas>
+              <p class="muted tiny">
+                {aiSheet.frames} frames · {aiSheet.width}×{aiSheet.height} — saved beside
+                the asset as <span class="mono">ai_sheet/sheet.png</span>.
+                {#if sheetSeamPct !== null}
+                  <br />
+                  <span class:seam-bad={sheetSeamPct > 8}>
+                    loop seam: {sheetSeamPct.toFixed(1)}% first↔last diff
+                    {sheetSeamPct > 8 ? "— visible pop likely, consider redoing" : "— loops cleanly"}
+                  </span>
+                {/if}
+              </p>
             {/if}
           {/if}
         </div>
@@ -1782,6 +1857,47 @@
     background:
       repeating-conic-gradient(var(--wash-soft) 0% 25%, transparent 0% 50%)
       0 0 / 12px 12px;
+  }
+  /* Source picker: animate the still (SpriteCook) vs bake a video clip. */
+  .src-toggle {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--wash-soft);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+  }
+  .src-toggle .seg {
+    flex: 1;
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid transparent;
+    border-radius: calc(var(--radius-sm) - 2px);
+    background: transparent;
+    color: var(--bone-dim);
+    font-size: 0.78rem;
+    cursor: pointer;
+  }
+  .src-toggle .seg.on {
+    background: var(--gold-glow);
+    border-color: var(--gold-deep);
+    color: var(--gold);
+  }
+  .file-pick {
+    width: 100%;
+    text-align: left;
+    padding: var(--space-1) var(--space-2);
+    border: 1px dashed var(--line);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink);
+    font-size: 0.78rem;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .file-pick:hover {
+    border-color: var(--gold);
   }
   /* ── Take-action bar: everything you do TO the selected take ── */
   .take-bar {

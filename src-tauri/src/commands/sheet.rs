@@ -197,6 +197,66 @@ between frames, changing colors between frames, extra limbs, deformed",
     })
 }
 
+/// Bake a short video clip into the SAME transparent FX spritesheet the SpriteCook lane produces
+/// (`ai_sheet/sheet.png` + `sheet.json`), so preview + export reuse it unchanged. This is the
+/// license-safe lane for motion a rig can't author (flames, bursts, transformations): the video is
+/// bring-your-own (an imported file), matting is our own Rust cutters, and the clip never ships —
+/// only the baked sprite does. `frames` is clamped to 2–24 (even); `bg` picks the matte, `loop_mode`
+/// how the clip is made seamless.
+#[tauri::command]
+#[specta::specta]
+pub async fn generate_video_sheet(
+    app: tauri::AppHandle,
+    game_id: String,
+    asset_key: String,
+    src_path: String,
+    bg: crate::studio::video::VideoBg,
+    frames: u32,
+    loop_mode: crate::studio::video::VideoLoop,
+) -> Result<AiSheet, String> {
+    let base = projects_root(&app)?;
+    let video = std::path::PathBuf::from(&src_path);
+    if !video.is_file() {
+        return Err(format!("video not found: {src_path}"));
+    }
+    let dir = sheet_dir(&base, &game_id, &asset_key);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create sheet dir: {e}"))?;
+
+    // ffmpeg extraction + per-frame matte is blocking CPU/subprocess work — keep it off the async
+    // runtime thread.
+    let work = dir.join("_video_work");
+    let (work2, video2) = (work.clone(), video.clone());
+    let (strip_png, n) = tokio::task::spawn_blocking(move || {
+        crate::studio::video::bake(&video2, bg, frames, loop_mode, &work2)
+    })
+    .await
+    .map_err(|e| format!("bake task failed: {e}"))??;
+    let _ = std::fs::remove_dir_all(&work);
+
+    // Persist the sheet + meta beside the asset (same contract as the SpriteCook lane).
+    std::fs::write(dir.join("sheet.png"), &strip_png).map_err(|e| format!("write sheet: {e}"))?;
+    let name = video.file_name().and_then(|s| s.to_str()).unwrap_or("video").to_string();
+    let prompt = format!("video: {name}");
+    let meta = SheetMeta { frames: n, prompt: prompt.clone() };
+    std::fs::write(
+        dir.join("sheet.json"),
+        serde_json::to_vec_pretty(&meta).map_err(|e| format!("encode meta: {e}"))?,
+    )
+    .map_err(|e| format!("write meta: {e}"))?;
+
+    let img = image::load_from_memory(&strip_png).map_err(|e| format!("decode sheet: {e}"))?;
+    Ok(AiSheet {
+        data_url: format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&strip_png)
+        ),
+        frames: n,
+        width: img.width(),
+        height: img.height(),
+        prompt,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
